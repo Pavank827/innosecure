@@ -267,7 +267,7 @@ function toggleSidebar() {
 function loadPageData(page) {
   switch (page) {
     case 'dashboard': loadDashboard(); break;
-    case 'users': loadUsers(); break;
+    case 'users': switchUsersTab('register'); break;
     case 'inside': loadCurrentInside(); break;
     case 'history': loadHistory(); break;
     case 'reports': loadReport(); break;
