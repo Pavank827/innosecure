@@ -91,30 +91,7 @@ async function handleCreateAccount(e) {
     return;
   }
 
-  if (password.length < 4) {
-    errorEl.textContent = 'Password must be at least 4 characters';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  try {
-    const response = await apiCall('create_admin_account', {
-      fullName: fullName,
-      username: username,
-      password: password
-    });
-
-    if (response.success) {
-      successEl.textContent = 'Admin account created successfully.';
-      successEl.style.display = 'block';
-
-      document.getElementById('createAccountForm').reset();
-
-      setTimeout(() => {
-        showLogin();
-      }, 2000);
-
-    } else {
+ else {
       errorEl.textContent = response.message || 'Account creation failed.';
       errorEl.style.display = 'block';
     }
