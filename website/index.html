@@ -43,9 +43,10 @@
       </form>
       <div class="login-footer">
         <p>Don't have an admin account?</p>
-        <button class="btn btn-outline btn-full" onclick="showCreateAccount()">
-          Create Admin Account
-        </button>
+       <button type="button" class="btn btn-outline btn-full"
+onclick="document.getElementById('loginScreen').style.display='none'; document.getElementById('createAccountScreen').style.display='flex';">
+    Create Admin Account
+</button>
       </div>
     </div>
   </div>
