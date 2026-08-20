@@ -1,7 +1,7 @@
 // ==================== CONFIGURATION ====================
-const API_URL = 'YOUR_GOOGLE_APPS_SCRIPT_URL';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyga0RcWMco2qesooHtQ2YrLzuek_NStm4HgxZ7HIzcQeq-kbrffSGsRoM4NhyNEU4vRA/exec';
 const REFRESH_INTERVAL = 5000;
-const DEMO_MODE = true;
+const DEMO_MODE = false;
 
 // ==================== STATE ====================
 let currentPage = 'dashboard';
