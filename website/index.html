@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InnoSecure</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- LOGIN SCREEN -->
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="login-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0110 0v4"></path>
+          </svg>
+        </div>
+        <h1>INNOSECURE</h1>
+        <p>Innovation Lab RFID Entry & Exit Monitoring System</p>
+      </div>
+      <form id="loginForm" class="login-form">
+        <div class="form-group">
+          <label for="loginUsername">Username</label>
+          <input type="text" id="loginUsername" placeholder="Enter username" required>
+        </div>
+        <div class="form-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" placeholder="Enter password" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"></path>
+          </svg>
+          Login
+        </button>
+        <div id="loginError" class="error-message" style="display:none;"></div>
+      </form>
+      <div class="login-footer">
+        <p>Don't have an admin account?</p>
+        <button class="btn btn-outline btn-full" onclick="showCreateAccount()">
+          Create Admin Account
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CREATE ADMIN ACCOUNT SCREEN -->
+  <div id="createAccountScreen" class="login-screen" style="display:none;">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="login-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+            <circle cx="8.5" cy="7" r="4"></circle>
+            <line x1="20" y1="8" x2="20" y2="14"></line>
+            <line x1="23" y1="11" x2="17" y2="11"></line>
+          </svg>
+        </div>
+        <h1>CREATE ADMIN ACCOUNT</h1>
+        <p>Website administration access</p>
+      </div>
+      <form id="createAccountForm" class="login-form">
+        <div class="form-group">
+          <label for="createFullName">Full Name</label>
+          <input type="text" id="createFullName" placeholder="Enter full name" required>
+        </div>
+        <div class="form-group">
+          <label for="createUsername">Username</label>
+          <input type="text" id="createUsername" placeholder="Choose a username" required>
+        </div>
+        <div class="form-group">
+          <label for="createPassword">Password</label>
+          <input type="password" id="createPassword" placeholder="Choose a password" required minlength="4">
+        </div>
+        <div class="form-group">
+          <label for="createConfirmPassword">Confirm Password</label>
+          <input type="password" id="createConfirmPassword" placeholder="Confirm password" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-full">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+          Create Account
+        </button>
+        <div id="createAccountError" class="error-message" style="display:none;"></div>
+        <div id="createAccountSuccess" class="success-message" style="display:none;"></div>
+      </form>
+      <div class="login-footer">
+        <p>Already have an admin account?</p>
+        <button class="btn btn-outline btn-full" onclick="showLogin()">
+          Back to Login
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="mainApp" class="app" style="display:none;">
+    
+    <!-- HEADER -->
+    <header class="header">
+      <div class="header-left">
+        <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <div class="header-brand">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          <div>
+            <h1>INNOSECURE</h1>
+            <p>Innovation Lab RFID Entry & Exit Monitoring System</p>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="system-status-header" id="systemStatusHeader">
+          <span class="status-dot online"></span>
+          <span>System Online</span>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="logout()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"></path>
+          </svg>
+          Logout
+        </button>
+      </div>
+    </header>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-page="dashboard" onclick="navigateTo('dashboard')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"></rect>
+            <rect x="14" y="3" width="7" height="7"></rect>
+            <rect x="14" y="14" width="7" height="7"></rect>
+            <rect x="3" y="14" width="7" height="7"></rect>
+          </svg>
+          Dashboard
+        </a>
+        <a href="#" class="nav-item" data-page="users" onclick="navigateTo('users')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+            <circle cx="9" cy="7" r="4"></circle>
+            <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>
+          </svg>
+          Users
+        </a>
+        <a href="#" class="nav-item" data-page="inside" onclick="navigateTo('inside')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+            <circle cx="8.5" cy="7" r="4"></circle>
+            <polyline points="17 11 19 13 23 9"></polyline>
+          </svg>
+          Currently Inside
+        </a>
+        <a href="#" class="nav-item" data-page="history" onclick="navigateTo('history')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <polyline points="12 6 12 12 16 14"></polyline>
+          </svg>
+          Entry/Exit History
+        </a>
+        <a href="#" class="nav-item" data-page="reports" onclick="navigateTo('reports')">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+            <polyline points="10 9 9 9 8 9"></polyline>
+          </svg>
+          Reports
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="sidebar-version">v1.0.0</div>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content" id="mainContent">
+
+      <!-- DASHBOARD PAGE -->
+      <div class="page active" id="page-dashboard">
+        <div class="page-header">
+          <h2>Dashboard</h2>
+          <p>System overview and real-time status</p>
+        </div>
+
+        <!-- Status Cards -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon blue">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Registered Users</span>
+              <span class="stat-value" id="statRegistered">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon green">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                <circle cx="8.5" cy="7" r="4"></circle>
+                <polyline points="17 11 19 13 23 9"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Currently Inside</span>
+              <span class="stat-value" id="statInside">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon purple">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+                <polyline points="17 6 23 6 23 12"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Today's Entries</span>
+              <span class="stat-value" id="statEntries">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon orange">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline>
+                <polyline points="17 18 23 18 23 12"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Today's Exits</span>
+              <span class="stat-value" id="statExits">--</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-grid">
+          <!-- Latest Activity -->
+          <div class="card">
+            <div class="card-header">
+              <h3>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                Latest RFID Activity
+              </h3>
+            </div>
+            <div class="card-body" id="latestActivity">
+              <div class="empty-state">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+                <p>No recent activity</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- System Status -->
+          <div class="card">
+            <div class="card-header">
+              <h3>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                  <line x1="8" y1="21" x2="16" y2="21"></line>
+                  <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+                System Status
+              </h3>
+            </div>
+            <div class="card-body">
+              <div class="status-list">
+                <div class="status-item">
+                  <span class="status-label">ESP32</span>
+                  <span class="status-value" id="statusESP32">
+                    <span class="status-dot online"></span> ONLINE
+                  </span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">RFID Reader</span>
+                  <span class="status-value" id="statusRFID">
+                    <span class="status-dot online"></span> READY
+                  </span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Internet</span>
+                  <span class="status-value" id="statusInternet">
+                    <span class="status-dot online"></span> CONNECTED
+                  </span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Google Sheets</span>
+                  <span class="status-value" id="statusSheets">
+                    <span class="status-dot online"></span> SYNCED
+                  </span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Last Sync</span>
+                  <span class="status-value" id="lastSyncTime">--</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- USERS PAGE -->
+      <div class="page" id="page-users">
+        <div class="page-header">
+          <div>
+            <h2>Users</h2>
+            <p>Manage registered RFID users</p>
+          </div>
+          <button class="btn btn-primary" onclick="startRegistration()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Register New User
+          </button>
+        </div>
+
+        <!-- Registration Modal -->
+        <div class="modal-overlay" id="registrationModal" style="display:none;">
+          <div class="modal">
+            <div class="modal-header">
+              <h3 id="registrationTitle">Register New User</h3>
+              <button class="modal-close" onclick="closeRegistration()">&times;</button>
+            </div>
+            <div class="modal-body" id="registrationBody">
+              <!-- Step 1: Waiting for scan -->
+              <div id="regStep1" class="reg-step">
+                <div class="reg-status">
+                  <div class="pulse-ring">
+                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                      <path d="M7 11V7a5 5 0 0110 0v4"></path>
+                    </svg>
+                  </div>
+                  <h4>RFID Reader Active</h4>
+                  <p>Please scan the new RFID card...</p>
+                </div>
+              </div>
+
+              <!-- Step 2: Card detected -->
+              <div id="regStep2" class="reg-step" style="display:none;">
+                <div class="reg-uid-display">
+                  <label>RFID UID</label>
+                  <div class="uid-value" id="regDetectedUID">--</div>
+                </div>
+                <form id="registrationForm" onsubmit="submitRegistration(event)">
+                  <div class="form-group">
+                    <label for="regName">Full Name</label>
+                    <input type="text" id="regName" placeholder="Enter full name" required>
+                  </div>
+                  <div class="form-group">
+                    <label for="regUserId">Student/Staff ID</label>
+                    <input type="text" id="regUserId" placeholder="Enter ID number" required>
+                  </div>
+                  <div class="form-group">
+                    <label for="regDept">Department</label>
+                    <input type="text" id="regDept" placeholder="Enter department" required>
+                  </div>
+                  <div class="form-row">
+                    <div class="form-group">
+                      <label for="regType">User Type</label>
+                      <select id="regType">
+                        <option value="Student">Student</option>
+                        <option value="Staff">Staff</option>
+                        <option value="Faculty">Faculty</option>
+                        <option value="Guest">Guest</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>Status</label>
+                      <input type="text" value="Active" disabled>
+                    </div>
+                  </div>
+                  <button type="submit" class="btn btn-primary btn-full">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
+                      <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                    Register User
+                  </button>
+                </form>
+              </div>
+
+              <!-- Step 3: Success -->
+              <div id="regStep3" class="reg-step" style="display:none;">
+                <div class="reg-success">
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
+                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                  </svg>
+                  <h4>User Registered Successfully</h4>
+                  <p id="regSuccessName">--</p>
+                  <p id="regSuccessUID">--</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Search and Filter -->
+        <div class="card">
+          <div class="card-body">
+            <div class="search-bar">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              <input type="text" id="userSearch" placeholder="Search by name, ID, RFID, or department..." oninput="filterUsers()">
+            </div>
+          </div>
+        </div>
+
+        <!-- Users Table -->
+        <div class="card">
+          <div class="table-container">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>User ID</th>
+                  <th>RFID UID</th>
+                  <th>Department</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Inside</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="usersTableBody">
+                <tr>
+                  <td colspan="8" class="empty-cell">Loading users...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- CURRENTLY INSIDE PAGE -->
+      <div class="page" id="page-inside">
+        <div class="page-header">
+          <h2>Currently Inside</h2>
+          <p>Users currently present in the Innovation Lab</p>
+        </div>
+
+        <div class="inside-count">
+          <div class="count-card">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+              <circle cx="8.5" cy="7" r="4"></circle>
+              <polyline points="17 11 19 13 23 9"></polyline>
+            </svg>
+            <div>
+              <span class="count-value" id="insideCount">--</span>
+              <span class="count-label">Users Currently Inside</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="table-container">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>User ID</th>
+                  <th>Department</th>
+                  <th>Entry Time</th>
+                  <th>Duration</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="insideTableBody">
+                <tr>
+                  <td colspan="6" class="empty-cell">Loading data...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- HISTORY PAGE -->
+      <div class="page" id="page-history">
+        <div class="page-header">
+          <h2>Entry/Exit History</h2>
+          <p>Complete access log history</p>
+        </div>
+
+        <!-- Filters -->
+        <div class="card">
+          <div class="card-body">
+            <div class="filter-grid">
+              <div class="form-group">
+                <label for="historyDate">Date</label>
+                <input type="date" id="historyDate" onchange="loadHistory()">
+              </div>
+              <div class="form-group">
+                <label for="historyName">Name</label>
+                <input type="text" id="historyName" placeholder="Filter by name" oninput="loadHistory()">
+              </div>
+              <div class="form-group">
+                <label for="historyRFID">RFID</label>
+                <input type="text" id="historyRFID" placeholder="Filter by RFID" oninput="loadHistory()">
+              </div>
+              <div class="form-group">
+                <label for="historyAction">Action</label>
+                <select id="historyAction" onchange="loadHistory()">
+                  <option value="">All Actions</option>
+                  <option value="ENTRY">Entry</option>
+                  <option value="EXIT">Exit</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- History Table -->
+        <div class="card">
+          <div class="table-container">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Time</th>
+                  <th>Name</th>
+                  <th>User ID</th>
+                  <th>RFID UID</th>
+                  <th>Action</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody">
+                <tr>
+                  <td colspan="7" class="empty-cell">Loading history...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- REPORTS PAGE -->
+      <div class="page" id="page-reports">
+        <div class="page-header">
+          <h2>Reports</h2>
+          <p>Generate and export access reports</p>
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="filter-grid">
+              <div class="form-group">
+                <label for="reportFrom">From Date</label>
+                <input type="date" id="reportFrom" onchange="loadReport()">
+              </div>
+              <div class="form-group">
+                <label for="reportTo">To Date</label>
+                <input type="date" id="reportTo" onchange="loadReport()">
+              </div>
+              <div class="form-group" style="align-self:end;">
+                <button class="btn btn-primary" onclick="exportExcel()">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                  Export Excel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Report Stats -->
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon green">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
+                <polyline points="17 6 23 6 23 12"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Total Entries</span>
+              <span class="stat-value" id="reportEntries">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon orange">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline>
+                <polyline points="17 18 23 18 23 12"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Total Exits</span>
+              <span class="stat-value" id="reportExits">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon blue">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Total Visits</span>
+              <span class="stat-value" id="reportVisits">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon purple">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                <circle cx="8.5" cy="7" r="4"></circle>
+                <polyline points="17 11 19 13 23 9"></polyline>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Currently Inside</span>
+              <span class="stat-value" id="reportInside">--</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Report Table -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Report Data</h3>
+          </div>
+          <div class="table-container">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>S.No</th>
+                  <th>Date</th>
+                  <th>RFID UID</th>
+                  <th>Name</th>
+                  <th>User ID</th>
+                  <th>Department</th>
+                  <th>User Type</th>
+                  <th>Action</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="reportTableBody">
+                <tr>
+                  <td colspan="9" class="empty-cell">Select date range to generate report</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast" style="display:none;">
+    <span id="toastMessage"></span>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
