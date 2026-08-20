@@ -96,7 +96,7 @@ function doGet(e) {
 
 // ==================== HELPER FUNCTIONS ====================
 function getSpreadsheet() {
-  return SpreadsheetApp.openById(SPREADSHEET_ID);
+  return SpreadsheetApp.getActiveSpreadsheet();
 }
 
 function getSheet(name) {
