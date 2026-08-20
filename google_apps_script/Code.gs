@@ -6,7 +6,7 @@
  */
 
 // ==================== CONFIGURATION ====================
-const SPREADSHEET_ID = '1EHQTxJaVCN-GivxZHYT8PT3Uekr-GH039y5aQ8yIQZ8';
+const SPREADSHEET_ID = '1EHQTxaJVCN-GivxZHYT8PT3Uekr-GH039y5aQ8yIQZ8';
 const SHEET_USERS = 'Users';
 const SHEET_ACCESS_LOG = 'Access_Log';  
 const SHEET_CURRENT_STATUS = 'Current_status';
