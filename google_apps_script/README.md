@@ -18,12 +18,13 @@ This Google Apps Script acts as the cloud API for the Makerspace RFID system. It
 
 ### Step 2: Create Sheets
 
-Create these 4 sheets in your spreadsheet:
+Create these 5 sheets in your spreadsheet:
 
 1. **Users** - Registered user data
 2. **Access_Log** - Entry/Exit event log
-3. **Current_Status** - Current inside/outside status
-4. **Settings** - System configuration
+3. **Current_status** - Current inside/outside status
+4. **Admin_Accounts** - Admin account credentials
+5. **Registration_Request** - RFID registration requests
 
 ### Step 3: Set Up Sheet Headers
 
@@ -42,18 +43,15 @@ Create these 4 sheets in your spreadsheet:
 |---|---|---|---|---|
 | RFID_UID | NAME | USER_ID | ENTRY_TIME | CURRENT_STATUS |
 
-#### Sheet: Settings
-| A | B |
-|---|---|
-| KEY | VALUE |
+#### Sheet: Admin_Accounts
+| A | B | C | D |
+|---|---|---|---|
+| FULL_NAME | USERNAME | PASSWORD_HASH | CREATED_AT |
 
-Add initial settings:
-| KEY | VALUE |
-|-----|-------|
-| SYSTEM_NAME | Makerspace Access Monitor |
-| TIMEZONE | Asia/Kolkata |
-| RFID_COOLDOWN | 3000 |
-| REFRESH_INTERVAL | 5000 |
+#### Sheet: Registration_Request
+| A | B | C | D | E |
+|---|---|---|---|---|
+| REQUEST_ID | STATUS | RFID_UID | CREATED_AT | UPDATED_AT |
 
 ### Step 4: Create Apps Script
 
@@ -103,11 +101,13 @@ The script supports these actions via POST requests:
 - `get_reports` - Get report data
 - `update_user` - Update user details
 - `delete_user` - Deactivate/remove user
-- `update_settings` - Update system settings
-- `get_settings` - Get current settings
 - `enter_registration_mode` - Trigger registration mode
+- `start_rfid_registration` - Start RFID registration process
+- `get_rfid_registration_status` - Get RFID registration status
+- `rfid_registration_result` - Store RFID scan result
 - `export_excel` - Get data for Excel export
 - `login` - Admin authentication
+- `create_admin_account` - Create new admin account
 
 ## Security Notes
 
@@ -139,7 +139,7 @@ You should see JSON response with system data.
 - Update `SPREADSHEET_ID` in Code.gs
 
 ### "Sheet not found"
-- Ensure sheet names match exactly: Users, Access_Log, Current_Status, Settings
+- Ensure sheet names match exactly: Users, Access_Log, Current_status, Admin_Accounts, Registration_Request
 
 ### "No access"
 - Redeploy with "Anyone" access

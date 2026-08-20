@@ -57,19 +57,9 @@ Create these 5 sheets (tabs at bottom):
 |------------|---------|
 | Users | RFID_UID, NAME, USER_ID, DEPARTMENT, USER_TYPE, STATUS, REGISTRATION_DATE |
 | Access_Log | TIMESTAMP, DATE, TIME, RFID_UID, NAME, USER_ID, ACTION, STATUS |
-| Current_Status | RFID_UID, NAME, USER_ID, ENTRY_TIME, CURRENT_STATUS |
-| Settings | KEY, VALUE |
+| Current_status | RFID_UID, NAME, USER_ID, ENTRY_TIME, CURRENT_STATUS |
 | Admin_Accounts | FULL_NAME, USERNAME, PASSWORD_HASH, CREATED_AT |
-
-### Add Settings Default Values
-In the Settings sheet, add:
-
-| KEY | VALUE |
-|-----|-------|
-| SYSTEM_NAME | InnoSecure |
-| TIMEZONE | Asia/Kolkata |
-| RFID_COOLDOWN | 3000 |
-| REFRESH_INTERVAL | 5000 |
+| Registration_Request | REQUEST_ID, STATUS, RFID_UID, CREATED_AT, UPDATED_AT |
 
 ---
 

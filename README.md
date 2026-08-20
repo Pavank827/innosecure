@@ -71,7 +71,7 @@ See `docs/SETUP.md` for complete wiring instructions.
 ### 2. Google Sheets Setup
 
 1. Create new Google Sheet
-2. Create 4 sheets: Users, Access_Log, Current_Status, Settings
+2. Create 5 sheets: Users, Access_Log, Current_status, Admin_Accounts, Registration_Request
 3. Add headers as specified in `docs/SETUP.md`
 
 ### 3. Google Apps Script Setup

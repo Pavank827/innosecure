@@ -8,10 +8,10 @@
 // ==================== CONFIGURATION ====================
 const SPREADSHEET_ID = '1EHQTxJaVCN-GivxZHYT8PT3Uekr-GH039y5aQ8yIQZ8';
 const SHEET_USERS = 'Users';
-const SHEET_ACCESS_LOG = 'Access_Log';
-const SHEET_CURRENT_STATUS = 'Current_Status';
-const SHEET_SETTINGS = 'Settings';
+const SHEET_ACCESS_LOG = 'Access_Log';  
+const SHEET_CURRENT_STATUS = 'Current_status';
 const SHEET_ADMIN_ACCOUNTS = 'Admin_Accounts';
+const SHEET_REGISTRATION_REQUEST = 'Registration_Request';
 
 // ==================== MAIN ENTRY POINT ====================
 function doPost(e) {
@@ -49,10 +49,6 @@ function doPost(e) {
         return handleUpdateUser(payload);
       case 'delete_user':
         return handleDeleteUser(payload);
-      case 'update_settings':
-        return handleUpdateSettings(payload);
-      case 'get_settings':
-        return handleGetSettings(payload);
       case 'enter_registration_mode':
         return handleEnterRegistrationMode(payload);
       case 'start_rfid_registration':
@@ -86,8 +82,6 @@ function doGet(e) {
         return handleGetHistory(e.parameter);
       case 'get_reports':
         return handleGetReports(e.parameter);
-      case 'get_settings':
-        return handleGetSettings({});
       case 'get_rfid_registration_status':
         return handleGetRFIDRegistrationStatus({});
       case 'health':
@@ -399,23 +393,6 @@ function handleGetDashboardData(payload) {
     };
   }
   
-  var settingsSheet = getSheet(SHEET_SETTINGS);
-  var settingsData = settingsSheet.getDataRange().getValues();
-  var lastSync = '';
-  for (var i = 1; i < settingsData.length; i++) {
-    if (settingsData[i][0] === 'LAST_SYNC') {
-      lastSync = settingsData[i][1];
-      break;
-    }
-  }
-  
-  settingsSheet.getRange('A1:B100').clear();
-  settingsSheet.appendRow(['SYSTEM_NAME', 'InnoSecure']);
-  settingsSheet.appendRow(['TIMEZONE', 'Asia/Kolkata']);
-  settingsSheet.appendRow(['RFID_COOLDOWN', '3000']);
-  settingsSheet.appendRow(['REFRESH_INTERVAL', '5000']);
-  settingsSheet.appendRow(['LAST_SYNC', formatISTDateTime()]);
-  
   return createResponse(true, 'Dashboard data retrieved', {
     registered_users: registeredUsers,
     currently_inside: currentlyInside,
@@ -664,43 +641,6 @@ function handleDeleteUser(payload) {
   return createResponse(false, 'User not found');
 }
 
-// ==================== SETTINGS ====================
-function handleUpdateSettings(payload) {
-  var sheet = getSheet(SHEET_SETTINGS);
-  var data = sheet.getDataRange().getValues();
-  
-  var keys = Object.keys(payload);
-  for (var k = 0; k < keys.length; k++) {
-    var key = keys[k];
-    var value = payload[key];
-    var found = false;
-    for (var i = 1; i < data.length; i++) {
-      if (data[i][0] === key) {
-        sheet.getRange(i + 1, 2).setValue(value);
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      sheet.appendRow([key, value]);
-    }
-  }
-  
-  return createResponse(true, 'Settings updated');
-}
-
-function handleGetSettings(payload) {
-  var sheet = getSheet(SHEET_SETTINGS);
-  var data = sheet.getDataRange().getValues();
-  var settings = {};
-  
-  for (var i = 1; i < data.length; i++) {
-    settings[data[i][0]] = data[i][1];
-  }
-  
-  return createResponse(true, 'Settings retrieved', settings);
-}
-
 // ==================== REGISTRATION MODE ====================
 function handleEnterRegistrationMode(payload) {
   return createResponse(true, 'Registration mode activated', {
@@ -711,40 +651,35 @@ function handleEnterRegistrationMode(payload) {
 
 // ==================== RFID REGISTRATION WORKFLOW ====================
 function handleStartRFIDRegistration(payload) {
-  var sheet = getSheet(SHEET_SETTINGS);
+  var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
   
-  var found = false;
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === 'RFID_REG_STATUS') {
-      sheet.getRange(i + 1, 2).setValue('WAITING');
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    sheet.appendRow(['RFID_REG_STATUS', 'WAITING']);
-  }
+  var requestId = 'REQ_' + Date.now();
+  var timestamp = formatISTDateTime();
+  
+  sheet.appendRow([requestId, 'WAITING', '', timestamp, timestamp]);
   
   return createResponse(true, 'RFID registration started', {
     status: 'WAITING',
-    message: 'Waiting for RFID card...'
+    message: 'Waiting for RFID card...',
+    request_id: requestId
   });
 }
 
 function handleGetRFIDRegistrationStatus(payload) {
-  var sheet = getSheet(SHEET_SETTINGS);
+  var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
   
   var status = 'IDLE';
   var rfidUid = '';
+  var requestId = '';
   
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === 'RFID_REG_STATUS') {
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (data[i][1] === 'WAITING' || data[i][1] === 'DETECTED') {
       status = data[i][1];
-    }
-    if (data[i][0] === 'RFID_REG_UID') {
-      rfidUid = data[i][1];
+      rfidUid = data[i][2] || '';
+      requestId = data[i][0];
+      break;
     }
   }
   
@@ -754,17 +689,9 @@ function handleGetRFIDRegistrationStatus(payload) {
       rfid_uid: ''
     });
   } else if (status === 'DETECTED' && rfidUid) {
-    var settingsSheet = getSheet(SHEET_SETTINGS);
-    var settingsData = settingsSheet.getDataRange().getValues();
-    for (var j = 1; j < settingsData.length; j++) {
-      if (settingsData[j][0] === 'RFID_REG_STATUS') {
-        settingsSheet.getRange(j + 1, 2).setValue('IDLE');
-        break;
-      }
-    }
-    for (var k = 1; k < settingsData.length; k++) {
-      if (settingsData[k][0] === 'RFID_REG_UID') {
-        settingsSheet.getRange(k + 1, 2).setValue('');
+    for (var j = 1; j < data.length; j++) {
+      if (data[j][0] === requestId) {
+        sheet.getRange(j + 1, 2).setValue('IDLE');
         break;
       }
     }
@@ -782,7 +709,7 @@ function handleGetRFIDRegistrationStatus(payload) {
 }
 
 function handleRFIDRegistrationResult(payload) {
-  var sheet = getSheet(SHEET_SETTINGS);
+  var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
   
   var rfidUid = payload.rfid_uid;
@@ -790,30 +717,20 @@ function handleRFIDRegistrationResult(payload) {
     return createResponse(false, 'No RFID UID provided');
   }
   
-  var foundStatus = false;
-  var foundUid = false;
-  for (var i = 1; i < data.length; i++) {
-    if (data[i][0] === 'RFID_REG_STATUS') {
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (data[i][1] === 'WAITING') {
       sheet.getRange(i + 1, 2).setValue('DETECTED');
-      foundStatus = true;
-    }
-    if (data[i][0] === 'RFID_REG_UID') {
-      sheet.getRange(i + 1, 2).setValue(rfidUid);
-      foundUid = true;
+      sheet.getRange(i + 1, 3).setValue(rfidUid);
+      sheet.getRange(i + 1, 5).setValue(formatISTDateTime());
+      
+      return createResponse(true, 'RFID registration result stored', {
+        rfid_uid: rfidUid,
+        status: 'DETECTED'
+      });
     }
   }
   
-  if (!foundStatus) {
-    sheet.appendRow(['RFID_REG_STATUS', 'DETECTED']);
-  }
-  if (!foundUid) {
-    sheet.appendRow(['RFID_REG_UID', rfidUid]);
-  }
-  
-  return createResponse(true, 'RFID registration result stored', {
-    rfid_uid: rfidUid,
-    status: 'DETECTED'
-  });
+  return createResponse(false, 'No pending registration request found');
 }
 
 // ==================== EXPORT EXCEL ====================
@@ -886,20 +803,16 @@ function initializeSpreadsheet() {
     statusSheet.appendRow(['RFID_UID', 'NAME', 'USER_ID', 'ENTRY_TIME', 'CURRENT_STATUS']);
   }
   
-  var settingsSheet = ss.getSheetByName(SHEET_SETTINGS);
-  if (!settingsSheet) {
-    settingsSheet = ss.insertSheet(SHEET_SETTINGS);
-    settingsSheet.appendRow(['KEY', 'VALUE']);
-    settingsSheet.appendRow(['SYSTEM_NAME', 'InnoSecure']);
-    settingsSheet.appendRow(['TIMEZONE', 'Asia/Kolkata']);
-    settingsSheet.appendRow(['RFID_COOLDOWN', '3000']);
-    settingsSheet.appendRow(['REFRESH_INTERVAL', '5000']);
-  }
-  
   var adminSheet = ss.getSheetByName(SHEET_ADMIN_ACCOUNTS);
   if (!adminSheet) {
     adminSheet = ss.insertSheet(SHEET_ADMIN_ACCOUNTS);
     adminSheet.appendRow(['FULL_NAME', 'USERNAME', 'PASSWORD_HASH', 'CREATED_AT']);
+  }
+  
+  var regSheet = ss.getSheetByName(SHEET_REGISTRATION_REQUEST);
+  if (!regSheet) {
+    regSheet = ss.insertSheet(SHEET_REGISTRATION_REQUEST);
+    regSheet.appendRow(['REQUEST_ID', 'STATUS', 'RFID_UID', 'CREATED_AT', 'UPDATED_AT']);
   }
   
   return 'Spreadsheet initialized successfully';

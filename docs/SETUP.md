@@ -132,20 +132,17 @@ Create these tabs at the bottom:
 |---|---|---|---|---|
 | RFID_UID | NAME | USER_ID | ENTRY_TIME | CURRENT_STATUS |
 
-#### Sheet 4: Settings
+#### Sheet 4: Admin_Accounts
 
-| A | B |
-|---|---|
-| KEY | VALUE |
+| A | B | C | D |
+|---|---|---|---|
+| FULL_NAME | USERNAME | PASSWORD_HASH | CREATED_AT |
 
-**Add initial settings:**
+#### Sheet 5: Registration_Request
 
-| KEY | VALUE |
-|-----|-------|
-| SYSTEM_NAME | Makerspace Access Monitor |
-| TIMEZONE | Asia/Kolkata |
-| RFID_COOLDOWN | 3000 |
-| REFRESH_INTERVAL | 5000 |
+| A | B | C | D | E |
+|---|---|---|---|---|
+| REQUEST_ID | STATUS | RFID_UID | CREATED_AT | UPDATED_AT |
 
 ---
 
