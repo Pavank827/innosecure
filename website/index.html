@@ -332,134 +332,130 @@
         <div class="page-header">
           <div>
             <h2>Users</h2>
-            <p>Manage registered RFID users</p>
+            <p>Manage and register RFID users</p>
           </div>
-          <button class="btn btn-primary" onclick="startRegistration()">
+        </div>
+
+        <!-- Users Tabs -->
+        <div class="users-tabs">
+          <button class="users-tab active" id="tabRegisteredUsers" onclick="switchUsersTab('registered')">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+            </svg>
+            Registered Users
+          </button>
+          <button class="users-tab" id="tabRegisterUser" onclick="switchUsersTab('register')">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
-            Register New User
+            Register User
           </button>
         </div>
 
-        <!-- Registration Modal -->
-        <div class="modal-overlay" id="registrationModal" style="display:none;">
-          <div class="modal">
-            <div class="modal-header">
-              <h3 id="registrationTitle">Register New User</h3>
-              <button class="modal-close" onclick="closeRegistration()">&times;</button>
-            </div>
-            <div class="modal-body" id="registrationBody">
-              <!-- Step 1: Waiting for scan -->
-              <div id="regStep1" class="reg-step">
-                <div class="reg-status">
-                  <div class="pulse-ring">
-                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                      <path d="M7 11V7a5 5 0 0110 0v4"></path>
-                    </svg>
-                  </div>
-                  <h4>RFID Reader Active</h4>
-                  <p>Please scan the new RFID card...</p>
-                </div>
+        <!-- TAB 1: Registered Users -->
+        <div id="usersPanelRegistered" class="users-panel">
+          <div class="card">
+            <div class="card-body">
+              <div class="search-bar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="userSearch" placeholder="Search by name, ID, RFID, or department..." oninput="filterUsers()">
               </div>
+            </div>
+          </div>
 
-              <!-- Step 2: Card detected -->
-              <div id="regStep2" class="reg-step" style="display:none;">
-                <div class="reg-uid-display">
-                  <label>RFID UID</label>
-                  <div class="uid-value" id="regDetectedUID">--</div>
+          <div class="card">
+            <div class="table-container">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>User ID</th>
+                    <th>RFID UID</th>
+                    <th>Department</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Inside</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody">
+                  <tr>
+                    <td colspan="8" class="empty-cell">Loading users...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: Register User -->
+        <div id="usersPanelRegister" class="users-panel" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <h3>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                  <circle cx="8.5" cy="7" r="4"></circle>
+                  <line x1="20" y1="8" x2="20" y2="14"></line>
+                  <line x1="23" y1="11" x2="17" y2="11"></line>
+                </svg>
+                Register New User
+              </h3>
+            </div>
+            <div class="card-body">
+              <form id="registerUserForm" onsubmit="submitRegisterUser(event)">
+                <div class="form-group">
+                  <label for="regUserName">Full Name</label>
+                  <input type="text" id="regUserName" placeholder="Enter full name" required>
                 </div>
-                <form id="registrationForm" onsubmit="submitRegistration(event)">
-                  <div class="form-group">
-                    <label for="regName">Full Name</label>
-                    <input type="text" id="regName" placeholder="Enter full name" required>
+                <div class="form-group">
+                  <label for="regUserUserId">User ID</label>
+                  <input type="text" id="regUserUserId" placeholder="Enter user ID" required>
+                </div>
+                <div class="form-group">
+                  <label for="regUserDept">Department</label>
+                  <input type="text" id="regUserDept" placeholder="Enter department" required>
+                </div>
+                <div class="form-group">
+                  <label for="regUserType">User Type</label>
+                  <select id="regUserType">
+                    <option value="Student">Student</option>
+                    <option value="Teacher">Teacher</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="regUserRFID">RFID UID</label>
+                  <div class="rfid-input-group">
+                    <input type="text" id="regUserRFID" placeholder="Click READ RFID to scan card" readonly>
+                    <button type="button" class="btn btn-primary" id="btnReadRFID" onclick="startRFIDScan()">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 11V7a5 5 0 0110 0v4"></path>
+                      </svg>
+                      READ RFID
+                    </button>
                   </div>
-                  <div class="form-group">
-                    <label for="regUserId">Student/Staff ID</label>
-                    <input type="text" id="regUserId" placeholder="Enter ID number" required>
-                  </div>
-                  <div class="form-group">
-                    <label for="regDept">Department</label>
-                    <input type="text" id="regDept" placeholder="Enter department" required>
-                  </div>
-                  <div class="form-row">
-                    <div class="form-group">
-                      <label for="regType">User Type</label>
-                      <select id="regType">
-                        <option value="Student">Student</option>
-                        <option value="Staff">Staff</option>
-                        <option value="Faculty">Faculty</option>
-                        <option value="Guest">Guest</option>
-                      </select>
-                    </div>
-                    <div class="form-group">
-                      <label>Status</label>
-                      <input type="text" value="Active" disabled>
-                    </div>
-                  </div>
-                  <button type="submit" class="btn btn-primary btn-full">
+                  <div id="rfidScanStatus" class="rfid-scan-status" style="display:none;"></div>
+                </div>
+                <div class="form-actions">
+                  <button type="submit" class="btn btn-primary" id="btnRegisterUser" disabled>
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
                       <polyline points="22 4 12 14.01 9 11.01"></polyline>
                     </svg>
-                    Register User
+                    REGISTER USER
                   </button>
-                </form>
-              </div>
-
-              <!-- Step 3: Success -->
-              <div id="regStep3" class="reg-step" style="display:none;">
-                <div class="reg-success">
-                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path>
-                    <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                  </svg>
-                  <h4>User Registered Successfully</h4>
-                  <p id="regSuccessName">--</p>
-                  <p id="regSuccessUID">--</p>
+                  <button type="button" class="btn btn-outline" onclick="switchUsersTab('registered')">
+                    Back to Registered Users
+                  </button>
                 </div>
-              </div>
+              </form>
             </div>
-          </div>
-        </div>
-
-        <!-- Search and Filter -->
-        <div class="card">
-          <div class="card-body">
-            <div class="search-bar">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
-              <input type="text" id="userSearch" placeholder="Search by name, ID, RFID, or department..." oninput="filterUsers()">
-            </div>
-          </div>
-        </div>
-
-        <!-- Users Table -->
-        <div class="card">
-          <div class="table-container">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>User ID</th>
-                  <th>RFID UID</th>
-                  <th>Department</th>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Inside</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="usersTableBody">
-                <tr>
-                  <td colspan="8" class="empty-cell">Loading users...</td>
-                </tr>
-              </tbody>
-            </table>
           </div>
         </div>
       </div>

@@ -6,7 +6,7 @@
  */
 
 // ==================== CONFIGURATION ====================
-const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
+const SPREADSHEET_ID = '1EHQTxJaVCN-GivxZHYT8PT3Uekr-GH039y5aQ8yIQZ8';
 const SHEET_USERS = 'Users';
 const SHEET_ACCESS_LOG = 'Access_Log';
 const SHEET_CURRENT_STATUS = 'Current_Status';
@@ -55,6 +55,12 @@ function doPost(e) {
         return handleGetSettings(payload);
       case 'enter_registration_mode':
         return handleEnterRegistrationMode(payload);
+      case 'start_rfid_registration':
+        return handleStartRFIDRegistration(payload);
+      case 'get_rfid_registration_status':
+        return handleGetRFIDRegistrationStatus(payload);
+      case 'rfid_registration_result':
+        return handleRFIDRegistrationResult(payload);
       case 'export_excel':
         return handleExportExcel(payload);
       default:
@@ -82,6 +88,8 @@ function doGet(e) {
         return handleGetReports(e.parameter);
       case 'get_settings':
         return handleGetSettings({});
+      case 'get_rfid_registration_status':
+        return handleGetRFIDRegistrationStatus({});
       case 'health':
         return createResponse(true, 'System operational');
       default:
@@ -698,6 +706,113 @@ function handleEnterRegistrationMode(payload) {
   return createResponse(true, 'Registration mode activated', {
     mode: 'registration',
     instruction: 'Scan RFID card to register'
+  });
+}
+
+// ==================== RFID REGISTRATION WORKFLOW ====================
+function handleStartRFIDRegistration(payload) {
+  var sheet = getSheet(SHEET_SETTINGS);
+  var data = sheet.getDataRange().getValues();
+  
+  var found = false;
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === 'RFID_REG_STATUS') {
+      sheet.getRange(i + 1, 2).setValue('WAITING');
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    sheet.appendRow(['RFID_REG_STATUS', 'WAITING']);
+  }
+  
+  return createResponse(true, 'RFID registration started', {
+    status: 'WAITING',
+    message: 'Waiting for RFID card...'
+  });
+}
+
+function handleGetRFIDRegistrationStatus(payload) {
+  var sheet = getSheet(SHEET_SETTINGS);
+  var data = sheet.getDataRange().getValues();
+  
+  var status = 'IDLE';
+  var rfidUid = '';
+  
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === 'RFID_REG_STATUS') {
+      status = data[i][1];
+    }
+    if (data[i][0] === 'RFID_REG_UID') {
+      rfidUid = data[i][1];
+    }
+  }
+  
+  if (status === 'WAITING') {
+    return createResponse(true, 'Status retrieved', {
+      status: 'WAITING',
+      rfid_uid: ''
+    });
+  } else if (status === 'DETECTED' && rfidUid) {
+    var settingsSheet = getSheet(SHEET_SETTINGS);
+    var settingsData = settingsSheet.getDataRange().getValues();
+    for (var j = 1; j < settingsData.length; j++) {
+      if (settingsData[j][0] === 'RFID_REG_STATUS') {
+        settingsSheet.getRange(j + 1, 2).setValue('IDLE');
+        break;
+      }
+    }
+    for (var k = 1; k < settingsData.length; k++) {
+      if (settingsData[k][0] === 'RFID_REG_UID') {
+        settingsSheet.getRange(k + 1, 2).setValue('');
+        break;
+      }
+    }
+    
+    return createResponse(true, 'RFID detected', {
+      status: 'DETECTED',
+      rfid_uid: rfidUid
+    });
+  }
+  
+  return createResponse(true, 'Status retrieved', {
+    status: 'IDLE',
+    rfid_uid: ''
+  });
+}
+
+function handleRFIDRegistrationResult(payload) {
+  var sheet = getSheet(SHEET_SETTINGS);
+  var data = sheet.getDataRange().getValues();
+  
+  var rfidUid = payload.rfid_uid;
+  if (!rfidUid) {
+    return createResponse(false, 'No RFID UID provided');
+  }
+  
+  var foundStatus = false;
+  var foundUid = false;
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][0] === 'RFID_REG_STATUS') {
+      sheet.getRange(i + 1, 2).setValue('DETECTED');
+      foundStatus = true;
+    }
+    if (data[i][0] === 'RFID_REG_UID') {
+      sheet.getRange(i + 1, 2).setValue(rfidUid);
+      foundUid = true;
+    }
+  }
+  
+  if (!foundStatus) {
+    sheet.appendRow(['RFID_REG_STATUS', 'DETECTED']);
+  }
+  if (!foundUid) {
+    sheet.appendRow(['RFID_REG_UID', rfidUid]);
+  }
+  
+  return createResponse(true, 'RFID registration result stored', {
+    rfid_uid: rfidUid,
+    status: 'DETECTED'
   });
 }
 

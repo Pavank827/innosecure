@@ -392,60 +392,174 @@ function filterUsers() {
   renderUsersTable(filtered);
 }
 
-// ==================== REGISTRATION ====================
-function startRegistration() {
-  document.getElementById('registrationModal').style.display = 'flex';
-  document.getElementById('regStep1').style.display = 'block';
-  document.getElementById('regStep2').style.display = 'none';
-  document.getElementById('regStep3').style.display = 'none';
-  document.getElementById('registrationTitle').textContent = 'Register New User';
+// ==================== USERS TAB NAVIGATION ====================
+function switchUsersTab(tab) {
+  const tabRegistered = document.getElementById('tabRegisteredUsers');
+  const tabRegister = document.getElementById('tabRegisterUser');
+  const panelRegistered = document.getElementById('usersPanelRegistered');
+  const panelRegister = document.getElementById('usersPanelRegister');
   
-  if (!DEMO_MODE) {
-    apiCall('enter_registration_mode', {}).catch(console.error);
+  if (tab === 'registered') {
+    tabRegistered.classList.add('active');
+    tabRegister.classList.remove('active');
+    panelRegistered.style.display = 'block';
+    panelRegister.style.display = 'none';
+    loadUsers();
+  } else {
+    tabRegistered.classList.remove('active');
+    tabRegister.classList.add('active');
+    panelRegistered.style.display = 'none';
+    panelRegister.style.display = 'block';
+    resetRegisterForm();
   }
 }
 
-function closeRegistration() {
-  document.getElementById('registrationModal').style.display = 'none';
+function resetRegisterForm() {
+  document.getElementById('registerUserForm').reset();
+  document.getElementById('regUserRFID').value = '';
+  document.getElementById('rfidScanStatus').style.display = 'none';
+  document.getElementById('btnReadRFID').disabled = false;
+  document.getElementById('btnRegisterUser').disabled = true;
   registrationUID = '';
 }
 
-function showRegistrationStep2(uid) {
-  registrationUID = uid;
-  document.getElementById('regStep1').style.display = 'none';
-  document.getElementById('regStep2').style.display = 'block';
-  document.getElementById('regDetectedUID').textContent = uid;
-  document.getElementById('registrationForm').reset();
-}
+// ==================== RFID SCAN WORKFLOW ====================
+let rfidPollTimer = null;
 
-function showRegistrationSuccess(name, uid) {
-  document.getElementById('regStep2').style.display = 'none';
-  document.getElementById('regStep3').style.display = 'block';
-  document.getElementById('regSuccessName').textContent = name;
-  document.getElementById('regSuccessUID').textContent = 'RFID: ' + uid;
+async function startRFIDScan() {
+  const btn = document.getElementById('btnReadRFID');
+  const statusEl = document.getElementById('rfidScanStatus');
+  const rfidField = document.getElementById('regUserRFID');
   
-  setTimeout(() => {
-    closeRegistration();
-    loadUsers();
-  }, 3000);
+  btn.disabled = true;
+  btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg> SCANNING...';
+  
+  statusEl.textContent = 'Waiting for RFID card...';
+  statusEl.className = 'rfid-scan-status waiting';
+  statusEl.style.display = 'block';
+  
+  rfidField.value = '';
+  registrationUID = '';
+  document.getElementById('btnRegisterUser').disabled = true;
+  
+  try {
+    const response = await apiCall('start_rfid_registration', {});
+    
+    if (response.success) {
+      pollRFIDResult();
+    } else {
+      showRFIDError('Failed to start RFID scan. Please try again.');
+    }
+  } catch (error) {
+    showRFIDError('Connection error. Please try again.');
+  }
 }
 
-async function submitRegistration(e) {
+function pollRFIDResult() {
+  if (rfidPollTimer) clearInterval(rfidPollTimer);
+  
+  let attempts = 0;
+  const maxAttempts = 30;
+  
+  rfidPollTimer = setInterval(async () => {
+    attempts++;
+    
+    if (attempts >= maxAttempts) {
+      clearInterval(rfidPollTimer);
+      showRFIDError('RFID scan timed out. Please try again.');
+      return;
+    }
+    
+    try {
+      const response = await apiGet('get_rfid_registration_status', {});
+      
+      if (response.success && response.data) {
+        if (response.data.status === 'DETECTED' && response.data.rfid_uid) {
+          clearInterval(rfidPollTimer);
+          handleRFIDDetected(response.data.rfid_uid);
+        } else if (response.data.status === 'TIMEOUT') {
+          clearInterval(rfidPollTimer);
+          showRFIDError('RFID scan timed out. Please try again.');
+        }
+      }
+    } catch (error) {
+      clearInterval(rfidPollTimer);
+      showRFIDError('Connection error. Please try again.');
+    }
+  }, 1000);
+}
+
+function handleRFIDDetected(uid) {
+  const btn = document.getElementById('btnReadRFID');
+  const statusEl = document.getElementById('rfidScanStatus');
+  const rfidField = document.getElementById('regUserRFID');
+  
+  registrationUID = uid;
+  rfidField.value = uid;
+  
+  statusEl.textContent = 'RFID detected successfully';
+  statusEl.className = 'rfid-scan-status success';
+  
+  btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg> RFID SCANNED';
+  btn.disabled = false;
+  
+  document.getElementById('btnRegisterUser').disabled = false;
+}
+
+function showRFIDError(message) {
+  const btn = document.getElementById('btnReadRFID');
+  const statusEl = document.getElementById('rfidScanStatus');
+  
+  statusEl.textContent = message;
+  statusEl.className = 'rfid-scan-status error';
+  
+  btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg> READ RFID';
+  btn.disabled = false;
+}
+
+// ==================== REGISTER USER ====================
+async function submitRegisterUser(e) {
   e.preventDefault();
   
+  const name = document.getElementById('regUserName').value.trim();
+  const userId = document.getElementById('regUserUserId').value.trim();
+  const department = document.getElementById('regUserDept').value.trim();
+  const userType = document.getElementById('regUserType').value;
+  const rfidUid = registrationUID;
+  
+  if (!name) {
+    showToast('Please enter a name', 'error');
+    return;
+  }
+  
+  if (!userId) {
+    showToast('Please enter a User ID', 'error');
+    return;
+  }
+  
+  if (!rfidUid) {
+    showToast('Please scan an RFID card first', 'error');
+    return;
+  }
+  
+  if (!department) {
+    showToast('Please enter a department', 'error');
+    return;
+  }
+  
   const userData = {
-    rfid_uid: registrationUID,
-    name: document.getElementById('regName').value,
-    user_id: document.getElementById('regUserId').value,
-    department: document.getElementById('regDept').value,
-    user_type: document.getElementById('regType').value
+    rfid_uid: rfidUid,
+    name: name,
+    user_id: userId,
+    department: department,
+    user_type: userType
   };
   
   try {
     const response = await apiCall('register_user', userData);
     if (response.success) {
-      showRegistrationSuccess(userData.name, registrationUID);
       showToast('User registered successfully', 'success');
+      switchUsersTab('registered');
     } else {
       showToast(response.message || 'Registration failed', 'error');
     }
@@ -793,6 +907,15 @@ function getDemoData(action, params) {
     
     case 'enter_registration_mode':
       return { success: true, data: { mode: 'registration' } };
+    
+    case 'start_rfid_registration':
+      return { success: true, data: { status: 'WAITING', message: 'Waiting for RFID card...' } };
+    
+    case 'get_rfid_registration_status':
+      return { success: true, data: { status: 'IDLE', rfid_uid: '' } };
+    
+    case 'rfid_registration_result':
+      return { success: true, message: 'RFID scanned', data: { rfid_uid: params.rfid_uid } };
     
     case 'export_excel':
       return {

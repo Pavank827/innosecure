@@ -1087,3 +1087,96 @@ body {
     padding: 16px;
   }
 }
+
+/* ==================== USERS TABS ==================== */
+.users-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0;
+}
+
+.users-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: all 0.2s;
+}
+
+.users-tab:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.users-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: transparent;
+}
+
+.users-tab svg {
+  flex-shrink: 0;
+}
+
+/* ==================== RFID INPUT GROUP ==================== */
+.rfid-input-group {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.rfid-input-group input {
+  flex: 1;
+  min-width: 0;
+}
+
+.rfid-input-group .btn {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rfid-scan-status {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.rfid-scan-status.waiting {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+.rfid-scan-status.success {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.rfid-scan-status.error {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+/* ==================== FORM ACTIONS ==================== */
+.form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.form-actions .btn {
+  flex: none;
+}
