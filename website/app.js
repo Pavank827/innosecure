@@ -1,7 +1,7 @@
 // ==================== CONFIGURATION ====================
-const API_URL = 'YOUR_GOOGLE_APPS_SCRIPT_URL';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyga0RcWMco2qesooHtQ2YrLzuek_NStm4HgxZ7HIzcQeq-kbrffSGsRoM4NhyNEU4vRA/exec';
 const REFRESH_INTERVAL = 5000;
-const DEMO_MODE = true;
+const DEMO_MODE = false;
 
 // ==================== STATE ====================
 let currentPage = 'dashboard';
@@ -72,54 +72,69 @@ function hashPassword(password) {
 
 async function handleCreateAccount(e) {
   e.preventDefault();
+
   const fullName = document.getElementById('createFullName').value.trim();
   const username = document.getElementById('createUsername').value.trim();
   const password = document.getElementById('createPassword').value;
   const confirmPassword = document.getElementById('createConfirmPassword').value;
+
   const errorEl = document.getElementById('createAccountError');
   const successEl = document.getElementById('createAccountSuccess');
 
   errorEl.style.display = 'none';
   successEl.style.display = 'none';
 
+  // Check required fields
+  if (!fullName || !username || !password || !confirmPassword) {
+    errorEl.textContent = 'Please fill in all fields';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // Check password match
   if (password !== confirmPassword) {
     errorEl.textContent = 'Passwords do not match';
     errorEl.style.display = 'block';
     return;
   }
 
+  // Check password length
   if (password.length < 4) {
     errorEl.textContent = 'Password must be at least 4 characters';
     errorEl.style.display = 'block';
     return;
   }
 
-  const accounts = getAdminAccounts();
-  const existingAccount = accounts.find(a => a.username.toLowerCase() === username.toLowerCase());
-  if (existingAccount) {
-    errorEl.textContent = 'Username already exists';
+  try {
+    const response = await apiCall('create_admin_account', {
+      fullName: fullName,
+      username: username,
+      password: password
+    });
+
+    if (response.success) {
+      successEl.textContent = 'Admin account created successfully.';
+      successEl.style.display = 'block';
+
+      document.getElementById('createAccountForm').reset();
+
+      setTimeout(() => {
+        showLogin();
+      }, 2000);
+
+    } else {
+      errorEl.textContent =
+        response.message || 'Account creation failed.';
+      errorEl.style.display = 'block';
+    }
+
+  } catch (error) {
+    console.error('Create account error:', error);
+
+    errorEl.textContent = 'Connection failed. Please try again.';
     errorEl.style.display = 'block';
-    return;
   }
-
-  const newAccount = {
-    fullName: fullName,
-    username: username,
-    passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString()
-  };
-
-  accounts.push(newAccount);
-  saveAdminAccounts(accounts);
-
-  successEl.textContent = 'Admin account created successfully.';
-  successEl.style.display = 'block';
-
-  setTimeout(() => {
-    showLogin();
-  }, 2000);
 }
-
 // ==================== AUTHENTICATION ====================
 async function handleLogin(e) {
   e.preventDefault();
@@ -204,7 +219,7 @@ async function apiCall(action, data = {}) {
   try {
     const response = await fetch(API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action, data })
     });
     
