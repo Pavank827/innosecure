@@ -72,21 +72,60 @@ function hashPassword(password) {
 
 async function handleCreateAccount(e) {
   e.preventDefault();
+
   const fullName = document.getElementById('createFullName').value.trim();
   const username = document.getElementById('createUsername').value.trim();
   const password = document.getElementById('createPassword').value;
   const confirmPassword = document.getElementById('createConfirmPassword').value;
+
   const errorEl = document.getElementById('createAccountError');
   const successEl = document.getElementById('createAccountSuccess');
 
   errorEl.style.display = 'none';
   successEl.style.display = 'none';
 
+  // Check password
   if (password !== confirmPassword) {
     errorEl.textContent = 'Passwords do not match';
     errorEl.style.display = 'block';
     return;
   }
+
+  if (password.length < 4) {
+    errorEl.textContent = 'Password must be at least 4 characters';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  try {
+    const response = await apiCall('create_admin_account', {
+      fullName: fullName,
+      username: username,
+      password: password
+    });
+
+    if (response.success) {
+      successEl.textContent = 'Admin account created successfully.';
+      successEl.style.display = 'block';
+
+      document.getElementById('createAccountForm').reset();
+
+      setTimeout(() => {
+        showLogin();
+      }, 2000);
+
+    } else {
+      errorEl.textContent = response.message || 'Account creation failed.';
+      errorEl.style.display = 'block';
+    }
+
+  } catch (error) {
+    console.error('Create account error:', error);
+
+    errorEl.textContent = 'Connection failed. Please try again.';
+    errorEl.style.display = 'block';
+  }
+}
 
   if (password.length < 4) {
     errorEl.textContent = 'Password must be at least 4 characters';
