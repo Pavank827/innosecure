@@ -84,15 +84,47 @@ async function handleCreateAccount(e) {
   errorEl.style.display = 'none';
   successEl.style.display = 'none';
 
-  // Check password
+  // Check required fields
+  if (!fullName || !username || !password || !confirmPassword) {
+    errorEl.textContent = 'Please fill in all fields';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  // Check password match
   if (password !== confirmPassword) {
     errorEl.textContent = 'Passwords do not match';
     errorEl.style.display = 'block';
     return;
   }
 
- else {
-      errorEl.textContent = response.message || 'Account creation failed.';
+  // Check password length
+  if (password.length < 4) {
+    errorEl.textContent = 'Password must be at least 4 characters';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  try {
+    const response = await apiCall('create_admin_account', {
+      fullName: fullName,
+      username: username,
+      password: password
+    });
+
+    if (response.success) {
+      successEl.textContent = 'Admin account created successfully.';
+      successEl.style.display = 'block';
+
+      document.getElementById('createAccountForm').reset();
+
+      setTimeout(() => {
+        showLogin();
+      }, 2000);
+
+    } else {
+      errorEl.textContent =
+        response.message || 'Account creation failed.';
       errorEl.style.display = 'block';
     }
 
@@ -103,39 +135,6 @@ async function handleCreateAccount(e) {
     errorEl.style.display = 'block';
   }
 }
-
-  if (password.length < 4) {
-    errorEl.textContent = 'Password must be at least 4 characters';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const accounts = getAdminAccounts();
-  const existingAccount = accounts.find(a => a.username.toLowerCase() === username.toLowerCase());
-  if (existingAccount) {
-    errorEl.textContent = 'Username already exists';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const newAccount = {
-    fullName: fullName,
-    username: username,
-    passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString()
-  };
-
-  accounts.push(newAccount);
-  saveAdminAccounts(accounts);
-
-  successEl.textContent = 'Admin account created successfully.';
-  successEl.style.display = 'block';
-
-  setTimeout(() => {
-    showLogin();
-  }, 2000);
-}
-
 // ==================== AUTHENTICATION ====================
 async function handleLogin(e) {
   e.preventDefault();
