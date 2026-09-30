@@ -530,7 +530,7 @@ function pollRFIDResult(requestId) {
         if (response.data.status === 'DETECTED' && response.data.rfid_uid) {
           handleRFIDDetected(response.data.rfid_uid);
           return;
-        } else if (response.data.status === 'TIMEOUT') {
+        } else if (response.data.status === 'TIMEOUT' || response.data.status === 'EXPIRED') {
           showRFIDError('RFID scan timed out. Please try again.');
           return;
         }
