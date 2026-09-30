@@ -491,37 +491,48 @@ async function startRFIDScan() {
 }
 
 function pollRFIDResult() {
-  if (rfidPollTimer) clearInterval(rfidPollTimer);
+  if (rfidPollTimer) clearTimeout(rfidPollTimer);
   
   let attempts = 0;
   const maxAttempts = 30;
+  const deadline = Date.now() + 60000;
+  let consecutiveErrors = 0;
   
-  rfidPollTimer = setInterval(async () => {
+  const poll = async () => {
     attempts++;
     
-    if (attempts >= maxAttempts) {
-      clearInterval(rfidPollTimer);
+    if (attempts > maxAttempts || Date.now() >= deadline) {
       showRFIDError('RFID scan timed out. Please try again.');
       return;
     }
     
     try {
       const response = await apiGet('get_rfid_registration_status', {});
+      consecutiveErrors = 0;
       
       if (response.success && response.data) {
         if (response.data.status === 'DETECTED' && response.data.rfid_uid) {
-          clearInterval(rfidPollTimer);
           handleRFIDDetected(response.data.rfid_uid);
+          return;
         } else if (response.data.status === 'TIMEOUT') {
-          clearInterval(rfidPollTimer);
           showRFIDError('RFID scan timed out. Please try again.');
+          return;
         }
       }
     } catch (error) {
-      clearInterval(rfidPollTimer);
-      showRFIDError('Connection error. Please try again.');
+      // One exhausted retry chain must not kill the scan; only stop after
+      // several failures in a row, so a transient 404 keeps polling.
+      consecutiveErrors++;
+      if (consecutiveErrors >= 3) {
+        showRFIDError('Connection error. Please try again.');
+        return;
+      }
     }
-  }, 1000);
+    
+    rfidPollTimer = setTimeout(poll, 1000);
+  };
+  
+  poll();
 }
 
 function handleRFIDDetected(uid) {
