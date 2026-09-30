@@ -93,8 +93,13 @@ See `docs/SETUP.md` for complete wiring instructions.
 
 1. Upload `website/` files to GitHub repository
 2. Edit `app.js` with your API URL
-3. Enable GitHub Pages
-4. Access your website
+3. GitHub Pages is deployed by `.github/workflows/deploy.yml`, which publishes the
+   **contents** of `website/` to the site root
+4. Access your website at: **https://pavank827.github.io/innosecure/**
+
+> The live URL has **no `/website/` suffix**. `website/` is the source folder in the
+> repository, not a folder on the published site, so
+> `https://pavank827.github.io/innosecure/website/` returns 404 by design.
 
 ---
 
