@@ -212,40 +212,51 @@ function showMainApp() {
 }
 
 // ==================== API CALLS ====================
+// Google's redirect target (script.googleusercontent.com/macros/echo) intermittently
+// answers 404/5xx. Without a retry a single blip surfaces as "Connection failed".
+const API_MAX_ATTEMPTS = 3;
+const API_RETRY_DELAY_MS = 600;
+
+async function fetchJSON(url, options = {}) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= API_MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error('HTTP error ' + response.status);
+
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+      if (attempt < API_MAX_ATTEMPTS) {
+        await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS * attempt));
+      }
+    }
+  }
+
+  console.error('API Error:', lastError);
+  throw lastError;
+}
+
 async function apiCall(action, data = {}) {
   if (DEMO_MODE) {
     return getDemoData(action, data);
   }
-  
-  try {
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, data })
-    });
-    
-    if (!response.ok) throw new Error('HTTP error');
-    return await response.json();
-  } catch (error) {
-    console.error('API Error:', error);
-    throw error;
-  }
+
+  return fetchJSON(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, data })
+  });
 }
 
 async function apiGet(action, params = {}) {
   if (DEMO_MODE) {
     return getDemoData(action, params);
   }
-  
-  try {
-    const queryString = new URLSearchParams({ action, ...params }).toString();
-    const response = await fetch(`${API_URL}?${queryString}`);
-    if (!response.ok) throw new Error('HTTP error');
-    return await response.json();
-  } catch (error) {
-    console.error('API Error:', error);
-    throw error;
-  }
+
+  const queryString = new URLSearchParams({ action, ...params }).toString();
+  return fetchJSON(`${API_URL}?${queryString}`);
 }
 
 // ==================== NAVIGATION ====================
