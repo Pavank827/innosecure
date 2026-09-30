@@ -469,7 +469,7 @@ async function startRFIDScan() {
   btn.disabled = true;
   btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg> SCANNING...';
   
-  statusEl.textContent = 'Waiting for RFID card...';
+  statusEl.textContent = 'Waiting for RFID card... Place the RFID card near the reader.';
   statusEl.className = 'rfid-scan-status waiting';
   statusEl.style.display = 'block';
   
@@ -489,7 +489,11 @@ async function startRFIDScan() {
     }
     
     if (response.success) {
-      pollRFIDResult();
+      const startRequestId = response.data && response.data.request_id
+        ? response.data.request_id
+        : '';
+      console.log('[REGISTRATION] start:', startRequestId || '(no request_id)');
+      pollRFIDResult(startRequestId);
     } else {
       showRFIDError('Failed to start RFID scan. Please try again.');
     }
@@ -498,7 +502,7 @@ async function startRFIDScan() {
   }
 }
 
-function pollRFIDResult() {
+function pollRFIDResult(requestId) {
   if (rfidPollTimer) clearTimeout(rfidPollTimer);
   
   let attempts = 0;
@@ -515,8 +519,12 @@ function pollRFIDResult() {
     }
     
     try {
-      const response = await apiGet('get_rfid_registration_status', {});
+      const response = await apiGet(
+        'get_rfid_registration_status',
+        requestId ? { request_id: requestId } : {}
+      );
       consecutiveErrors = 0;
+      console.log('[REGISTRATION] poll:', JSON.stringify(response.data || response));
       
       if (response.success && response.data) {
         if (response.data.status === 'DETECTED' && response.data.rfid_uid) {

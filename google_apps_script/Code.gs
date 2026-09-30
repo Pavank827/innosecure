@@ -13,6 +13,22 @@ const SHEET_CURRENT_STATUS = 'Current_status';
 const SHEET_ADMIN_ACCOUNTS = 'Admin_Accounts';
 const SHEET_REGISTRATION_REQUEST = 'Registration_Request';
 
+// A WAITING RFID registration request stays valid slightly longer than the
+// frontend's 60s poll window so a card tapped at the last second still lands.
+// After this age the request is marked EXPIRED (also cleans up abandoned rows).
+const RFID_REQUEST_TTL_MS = 65000;
+
+// Request IDs are REQ_<epoch_ms>; derive creation time without parsing dates.
+function parseRFIDRequestIdMs(requestId) {
+  var match = /^REQ_(\d+)$/.exec(String(requestId || ''));
+  return match ? Number(match[1]) : 0;
+}
+
+function expireRFIDRow(sheet, rowIndex) {
+  sheet.getRange(rowIndex + 1, 2).setValue('EXPIRED');
+  sheet.getRange(rowIndex + 1, 5).setValue(formatISTDateTime());
+}
+
 // ==================== MAIN ENTRY POINT ====================
 function doPost(e) {
   try {
@@ -55,6 +71,8 @@ function doPost(e) {
         return handleStartRFIDRegistration(payload);
       case 'get_rfid_registration_status':
         return handleGetRFIDRegistrationStatus(payload);
+      case 'get_pending_rfid_registration':
+        return handleGetPendingRFIDRegistration(payload);
       case 'rfid_registration_result':
         return handleRFIDRegistrationResult(payload);
       case 'export_excel':
@@ -83,7 +101,9 @@ function doGet(e) {
       case 'get_reports':
         return handleGetReports(e.parameter);
       case 'get_rfid_registration_status':
-        return handleGetRFIDRegistrationStatus({});
+        return handleGetRFIDRegistrationStatus(e.parameter);
+      case 'get_pending_rfid_registration':
+        return handleGetPendingRFIDRegistration({});
       case 'health':
         return createResponse(true, 'System operational');
       default:
@@ -654,10 +674,20 @@ function handleStartRFIDRegistration(payload) {
   var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
   
+  // Single active request: expire any previous WAITING/DETECTED rows so the
+  // web and the ESP32 always agree on which request is live (concurrency).
+  for (var i = 1; i < data.length; i++) {
+    var oldStatus = String(data[i][1]);
+    if (oldStatus === 'WAITING' || oldStatus === 'DETECTED') {
+      expireRFIDRow(sheet, i);
+    }
+  }
+  
   var requestId = 'REQ_' + Date.now();
   var timestamp = formatISTDateTime();
   
   sheet.appendRow([requestId, 'WAITING', '', timestamp, timestamp]);
+  console.log('[REGISTRATION] request created: ' + requestId);
   
   return createResponse(true, 'RFID registration started', {
     status: 'WAITING',
@@ -666,44 +696,98 @@ function handleStartRFIDRegistration(payload) {
   });
 }
 
+// ESP32 polls this (and the web can too) to discover the oldest live WAITING
+// request. Stale rows (older than RFID_REQUEST_TTL_MS) are marked EXPIRED here.
+function handleGetPendingRFIDRegistration(payload) {
+  var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
+  var data = sheet.getDataRange().getValues();
+  var now = Date.now();
+  
+  var oldestIdx = -1;
+  var oldestMs = 0;
+  
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][1]) !== 'WAITING') continue;
+    
+    var createdMs = parseRFIDRequestIdMs(data[i][0]);
+    if (createdMs && now - createdMs > RFID_REQUEST_TTL_MS) {
+      expireRFIDRow(sheet, i);
+      continue;
+    }
+    
+    if (oldestIdx === -1 || createdMs < oldestMs) {
+      oldestIdx = i;
+      oldestMs = createdMs;
+    }
+  }
+  
+  if (oldestIdx === -1) {
+    return createResponse(true, 'No pending registration request', {
+      pending: false
+    });
+  }
+  
+  console.log('[REGISTRATION] pending served: ' + data[oldestIdx][0]);
+  return createResponse(true, 'Pending registration request', {
+    pending: true,
+    request_id: data[oldestIdx][0],
+    status: 'WAITING'
+  });
+}
+
 function handleGetRFIDRegistrationStatus(payload) {
   var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
+  var now = Date.now();
   
+  var wantId = payload && payload.request_id ? String(payload.request_id) : '';
   var status = 'IDLE';
   var rfidUid = '';
   var requestId = '';
+  var matchIdx = -1;
   
   for (var i = data.length - 1; i >= 1; i--) {
-    if (data[i][1] === 'WAITING' || data[i][1] === 'DETECTED') {
-      status = data[i][1];
-      rfidUid = data[i][2] || '';
-      requestId = data[i][0];
-      break;
+    var rowStatus = String(data[i][1]);
+    if (rowStatus !== 'WAITING' && rowStatus !== 'DETECTED') continue;
+    
+    // Skip (and expire) rows from an earlier, abandoned scan window.
+    var createdMs = parseRFIDRequestIdMs(data[i][0]);
+    if (createdMs && now - createdMs > RFID_REQUEST_TTL_MS) {
+      expireRFIDRow(sheet, i);
+      continue;
     }
+    
+    // When the caller polls for a specific request (the web does), only that
+    // row counts; otherwise fall back to the newest live row.
+    if (wantId && String(data[i][0]) !== wantId) continue;
+    
+    status = rowStatus;
+    rfidUid = data[i][2] || '';
+    requestId = data[i][0];
+    matchIdx = i;
+    break;
   }
   
   if (status === 'WAITING') {
     return createResponse(true, 'Status retrieved', {
       status: 'WAITING',
+      request_id: requestId,
       rfid_uid: ''
     });
   } else if (status === 'DETECTED' && rfidUid) {
-    for (var j = 1; j < data.length; j++) {
-      if (data[j][0] === requestId) {
-        sheet.getRange(j + 1, 2).setValue('IDLE');
-        break;
-      }
-    }
+    // Consume the result so it is reported exactly once.
+    sheet.getRange(matchIdx + 1, 2).setValue('IDLE');
     
     return createResponse(true, 'RFID detected', {
       status: 'DETECTED',
+      request_id: requestId,
       rfid_uid: rfidUid
     });
   }
   
   return createResponse(true, 'Status retrieved', {
     status: 'IDLE',
+    request_id: wantId,
     rfid_uid: ''
   });
 }
@@ -711,26 +795,56 @@ function handleGetRFIDRegistrationStatus(payload) {
 function handleRFIDRegistrationResult(payload) {
   var sheet = getSheet(SHEET_REGISTRATION_REQUEST);
   var data = sheet.getDataRange().getValues();
+  var now = Date.now();
   
   var rfidUid = payload.rfid_uid;
   if (!rfidUid) {
     return createResponse(false, 'No RFID UID provided');
   }
   
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (data[i][1] === 'WAITING') {
-      sheet.getRange(i + 1, 2).setValue('DETECTED');
-      sheet.getRange(i + 1, 3).setValue(rfidUid);
-      sheet.getRange(i + 1, 5).setValue(formatISTDateTime());
-      
-      return createResponse(true, 'RFID registration result stored', {
-        rfid_uid: rfidUid,
-        status: 'DETECTED'
-      });
+  var targetRow = -1;
+  
+  if (payload.request_id) {
+    // ESP32 path: match the exact request it was polling for.
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === String(payload.request_id) &&
+          String(data[i][1]) === 'WAITING') {
+        targetRow = i;
+        break;
+      }
+    }
+  } else {
+    // Legacy fallback (manual REGMODE firmware): newest live WAITING row.
+    for (var j = data.length - 1; j >= 1; j--) {
+      if (String(data[j][1]) !== 'WAITING') continue;
+      var rowMs = parseRFIDRequestIdMs(data[j][0]);
+      if (rowMs && now - rowMs > RFID_REQUEST_TTL_MS) continue;
+      targetRow = j;
+      break;
     }
   }
   
-  return createResponse(false, 'No pending registration request found');
+  if (targetRow === -1) {
+    console.log('[REGISTRATION] result rejected (no live request): ' +
+      (payload.request_id || 'no request_id') + ' uid=' + rfidUid);
+    return createResponse(false, 'No pending registration request found');
+  }
+  
+  sheet.getRange(targetRow + 1, 2).setValue('DETECTED');
+  sheet.getRange(targetRow + 1, 3).setValue(rfidUid);
+  sheet.getRange(targetRow + 1, 5).setValue(formatISTDateTime());
+  
+  var storedId = String(data[targetRow][0]);
+  console.log('[REGISTRATION] result stored: ' + storedId + ' uid=' + rfidUid);
+  
+  return ContentService.createTextOutput(JSON.stringify({
+    success: true,
+    status: 'DETECTED',
+    request_id: storedId,
+    rfid_uid: rfidUid,
+    message: 'RFID registration result stored',
+    timestamp: new Date().toISOString()
+  })).setMimeType(ContentService.MimeType.JSON);
 }
 
 // ==================== EXPORT EXCEL ====================
