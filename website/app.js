@@ -478,7 +478,15 @@ async function startRFIDScan() {
   document.getElementById('btnRegisterUser').disabled = true;
   
   try {
-    const response = await apiCall('start_rfid_registration', {});
+    // Apps Script occasionally answers HTTP 200 with success:false while it is
+    // under load. Retry the start so one transient backend error does not
+    // abort the scan; a persistent failure still shows the same message.
+    let response = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      response = await apiCall('start_rfid_registration', {});
+      if (response.success) break;
+      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
     
     if (response.success) {
       pollRFIDResult();
