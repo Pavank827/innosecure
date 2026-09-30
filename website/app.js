@@ -9,6 +9,7 @@ let refreshTimer = null;
 let isAuthenticated = false;
 let authToken = null;
 let registrationUID = '';
+let activeUsersTab = 'register';
 let usersData = [];
 let currentInsideData = [];
 let historyData = [];
@@ -267,7 +268,7 @@ function toggleSidebar() {
 function loadPageData(page) {
   switch (page) {
     case 'dashboard': loadDashboard(); break;
-    case 'users': switchUsersTab('register'); break;
+    case 'users': refreshUsersTab(); break;
     case 'inside': loadCurrentInside(); break;
     case 'history': loadHistory(); break;
     case 'reports': loadReport(); break;
@@ -409,11 +410,12 @@ function filterUsers() {
 
 // ==================== USERS TAB NAVIGATION ====================
 function switchUsersTab(tab) {
+  activeUsersTab = tab;
   const tabRegistered = document.getElementById('tabRegisteredUsers');
   const tabRegister = document.getElementById('tabRegisterUser');
   const panelRegistered = document.getElementById('usersPanelRegistered');
   const panelRegister = document.getElementById('usersPanelRegister');
-  
+
   if (tab === 'registered') {
     tabRegistered.classList.add('active');
     tabRegister.classList.remove('active');
@@ -425,7 +427,14 @@ function switchUsersTab(tab) {
     tabRegister.classList.add('active');
     panelRegistered.style.display = 'none';
     panelRegister.style.display = 'block';
-    resetRegisterForm();
+  }
+}
+
+// Auto-refresh for the Users page: refresh ONLY the registered-users list.
+// Never touches the registration form, so typed values and a scanned RFID UID survive.
+function refreshUsersTab() {
+  if (activeUsersTab === 'registered') {
+    loadUsers();
   }
 }
 
@@ -508,7 +517,10 @@ function handleRFIDDetected(uid) {
   const btn = document.getElementById('btnReadRFID');
   const statusEl = document.getElementById('rfidScanStatus');
   const rfidField = document.getElementById('regUserRFID');
-  
+
+  uid = (uid || '').trim();
+  if (!uid) return;
+
   registrationUID = uid;
   rfidField.value = uid;
   
@@ -574,6 +586,7 @@ async function submitRegisterUser(e) {
     const response = await apiCall('register_user', userData);
     if (response.success) {
       showToast('User registered successfully', 'success');
+      resetRegisterForm();
       switchUsersTab('registered');
     } else {
       showToast(response.message || 'Registration failed', 'error');
