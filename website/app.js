@@ -1,11 +1,15 @@
 // ==================== CONFIGURATION ====================
-const API_URL = 'https://script.google.com/macros/s/AKfycbyga0RcWMco2qesooHtQ2YrLzuek_NStm4HgxZ7HIzcQeq-kbrffSGsRoM4NhyNEU4vRA/exec';
-const REFRESH_INTERVAL = 5000;
+const API_URL = 'https://script.google.com/macros/s/AKfycbxgofza5uMuvmm-nEFbi4EQWT_SGYDVLOLh8xbJ12C-bpvoW3JGI9it5WN9-RhKWTn6-g/exec';
+// Cloudflare Worker: device liveness only (no API key required for action=device_status).
+const EDGE_API_URL = 'https://makerspace-rfid-edge-api.makerspace-rfid-edge-api.workers.dev/';
+const REFRESH_INTERVAL = 10000;
+const FILTER_DEBOUNCE_MS = 400;
 const DEMO_MODE = false;
 
 // ==================== STATE ====================
 let currentPage = 'dashboard';
 let refreshTimer = null;
+let refreshInFlight = false;
 let isAuthenticated = false;
 let authToken = null;
 let registrationUID = '';
@@ -14,6 +18,13 @@ let usersData = [];
 let currentInsideData = [];
 let historyData = [];
 let reportData = [];
+let dashboardSeq = 0;
+let usersSeq = 0;
+let insideSeq = 0;
+let historySeq = 0;
+let reportSeq = 0;
+let historyDebounceTimer = null;
+let reportRangeInitialised = false;
 
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', () => {
@@ -49,6 +60,28 @@ function showCreateAccount() {
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('createAccountScreen').style.display = 'flex';
   document.getElementById('loginError').style.display = 'none';
+}
+
+// Open the account form from inside the app (header "Add Admin" button).
+// The session token is still in memory there, which the backend requires
+// for create_admin_account once at least one account exists.
+function showCreateAccountForSession() {
+  document.getElementById('mainApp').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('createAccountScreen').style.display = 'flex';
+  document.getElementById('createAccountError').style.display = 'none';
+  document.getElementById('createAccountSuccess').style.display = 'none';
+  document.getElementById('createAccountForm').reset();
+}
+
+// Leave the account form: back to the app when logged in, otherwise to login.
+function closeCreateAccount() {
+  document.getElementById('createAccountScreen').style.display = 'none';
+  if (isAuthenticated) {
+    showMainApp();
+  } else {
+    showLogin();
+  }
 }
 
 // ==================== ADMIN ACCOUNT MANAGEMENT ====================
@@ -120,12 +153,18 @@ async function handleCreateAccount(e) {
       document.getElementById('createAccountForm').reset();
 
       setTimeout(() => {
-        showLogin();
+        closeCreateAccount();
       }, 2000);
 
     } else {
-      errorEl.textContent =
-        response.message || 'Account creation failed.';
+      let message = response.message || 'Account creation failed.';
+      if (message.indexOf('Authentication required') === 0) {
+        // The backend closes self-signup as soon as one admin exists, so this
+        // screen only works for the very first account.
+        message = 'Admin account creation is locked now that an admin account exists. ' +
+          'Sign in with an existing account and use "Add Admin" in the header instead.';
+      }
+      errorEl.textContent = message;
       errorEl.style.display = 'block';
     }
 
@@ -243,11 +282,34 @@ async function apiCall(action, data = {}) {
     return getDemoData(action, data);
   }
 
-  return fetchJSON(API_URL, {
+  // Session token is attached to every POST: the backend requires it for
+  // mutating actions (update_user, delete_user, export_excel,
+  // create_admin_account) as soon as an admin account exists.
+  const payload = authToken ? { ...data, auth_token: authToken } : data;
+
+  const json = await fetchJSON(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action, data })
+    body: JSON.stringify({ action, data: payload })
   });
+
+  if (json && json.success === false &&
+      typeof json.message === 'string' &&
+      json.message.indexOf('Authentication required') === 0) {
+    if (authToken) {
+      // Token expired or was rejected: force a fresh login instead of letting
+      // every subsequent action fail silently.
+      logout();
+      showToast('Session expired. Please log in again.', 'error');
+      // Flag it so the caller does not overwrite the message above.
+      return Object.assign({}, json, { session_expired: true });
+    }
+    // No session at all (e.g. the login-screen account form): let the caller
+    // show the backend message instead of claiming a session expired.
+    return json;
+  }
+
+  return json;
 }
 
 async function apiGet(action, params = {}) {
@@ -282,98 +344,239 @@ function loadPageData(page) {
     case 'users': refreshUsersTab(); break;
     case 'inside': loadCurrentInside(); break;
     case 'history': loadHistory(); break;
-    case 'reports': loadReport(); break;
+    case 'reports': ensureReportDateRange(); loadReport(); break;
   }
 }
 
 // ==================== AUTO REFRESH ====================
 function startAutoRefresh() {
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => {
-    loadPageData(currentPage);
-  }, REFRESH_INTERVAL);
+  refreshTimer = setInterval(refreshNow, REFRESH_INTERVAL);
+}
+
+// One refresh at a time: Apps Script calls can take several seconds, and a
+// 10 s timer would otherwise pile new requests on top of unfinished ones.
+function refreshNow() {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  Promise.resolve(loadPageData(currentPage)).finally(() => {
+    refreshInFlight = false;
+  });
 }
 
 // ==================== DASHBOARD ====================
+// Dashboard state comes from two independent sources:
+//   - Apps Script (statistics, latest scan, last sync)
+//   - Cloudflare Worker action=device_status (real ESP32 last-seen heartbeat)
+// Apps Script returns a HARDCODED system_status, so it is never used here.
 async function loadDashboard() {
-  try {
-    const response = await apiGet('get_dashboard_data');
-    if (!response.success) return;
-    
-    const data = response.data;
-    
-    document.getElementById('statRegistered').textContent = data.registered_users || 0;
-    document.getElementById('statInside').textContent = data.currently_inside || 0;
-    document.getElementById('statEntries').textContent = data.today_entries || 0;
-    document.getElementById('statExits').textContent = data.today_exits || 0;
-    
-    if (data.latest_scan) {
-      const scan = data.latest_scan;
-      const activityHTML = `
-        <div class="activity-item">
-          <div class="activity-icon ${scan.action.toLowerCase()}">
-            ${scan.action === 'ENTRY' ? 
-              '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline></svg>' :
-              '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline></svg>'
-            }
-          </div>
-          <div class="activity-info">
-            <div class="activity-name">${scan.name}</div>
-            <div class="activity-detail">${scan.action} &bull; ${scan.rfid_uid}</div>
-          </div>
-          <div class="activity-time">${formatTime(scan.timestamp)}</div>
+  const seq = ++dashboardSeq;
+
+  const [gas, edge] = await Promise.allSettled([
+    apiGet('get_dashboard_data'),
+    fetchEdgeDeviceStatus()
+  ]);
+  if (seq !== dashboardSeq) return;
+
+  const gasOk = gas.status === 'fulfilled' && gas.value && gas.value.success;
+  const edgeStatus = edge.status === 'fulfilled' ? edge.value : null;
+  const edgeError = edge.status === 'rejected';
+
+  if (gasOk) {
+    renderDashboardStats(gas.value.data || {});
+  } else {
+    const message = gas.status === 'rejected'
+      ? 'Could not reach the backend (Google Apps Script). Retrying…'
+      : 'Backend returned an error: ' + ((gas.value && gas.value.message) || 'unknown');
+    renderDashboardError(message);
+  }
+
+  updateSystemStatus(buildSystemStatus(gasOk, edgeStatus, edgeError), gasOk ? gas.value.data.last_sync : '', lastSeenLabel(edgeStatus));
+}
+
+// Device status is read-only and public on the Worker, so no API key is sent.
+async function fetchEdgeDeviceStatus() {
+  const response = await fetch(`${EDGE_API_URL}?action=device_status`, {
+    headers: { 'Accept': 'application/json' }
+  });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const json = await response.json();
+  if (!json.success || !json.data) throw new Error(json.message || 'device_status failed');
+  return json.data;
+}
+
+function buildSystemStatus(gasOk, edgeStatus, edgeError) {
+  let esp32 = 'UNKNOWN';
+  let rfid = 'UNKNOWN';
+  let lastSeen = null;
+
+  if (edgeStatus) {
+    lastSeen = edgeStatus;
+    if (edgeStatus.state === 'ONLINE') {
+      esp32 = 'ONLINE';
+      rfid = 'READY';
+    } else if (edgeStatus.state === 'OFFLINE') {
+      esp32 = 'OFFLINE';
+      rfid = 'NOT READY';
+    } else if (edgeStatus.state === 'NEVER_SEEN') {
+      esp32 = 'NEVER SEEN';
+      rfid = 'UNKNOWN';
+    }
+  } else if (edgeError) {
+    esp32 = 'UNKNOWN';
+    rfid = 'UNKNOWN';
+  }
+
+  return {
+    esp32: esp32,
+    rfid: rfid,
+    internet: navigator.onLine ? 'CONNECTED' : 'DISCONNECTED',
+    google_sheets: gasOk ? 'SYNCED' : 'ERROR',
+    last_seen: lastSeen
+  };
+}
+
+function lastSeenLabel(edgeStatus) {
+  if (!edgeStatus || !edgeStatus.last_seen) return '--';
+  const ageMs = Date.now() - Date.parse(edgeStatus.last_seen);
+  const ageText = Number.isFinite(ageMs) && ageMs >= 0
+    ? (ageMs < 60000 ? Math.round(ageMs / 1000) + 's ago' : Math.round(ageMs / 60000) + 'm ago')
+    : '';
+  return `${formatTime(edgeStatus.last_seen_ist)}${ageText ? ' (' + ageText + ')' : ''}`;
+}
+
+function renderDashboardStats(data) {
+  document.getElementById('statRegistered').textContent = data.registered_users || 0;
+  document.getElementById('statInside').textContent = data.currently_inside || 0;
+  document.getElementById('statEntries').textContent = data.today_entries || 0;
+  document.getElementById('statExits').textContent = data.today_exits || 0;
+
+  const activityEl = document.getElementById('latestActivity');
+  if (data.latest_scan) {
+    const scan = data.latest_scan;
+    const scanAction = String(scan.action || '').toUpperCase();
+    const activityHTML = `
+      <div class="activity-item">
+        <div class="activity-icon ${slug(scanAction)}">
+          ${scanAction === 'ENTRY' ?
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline></svg>' :
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline></svg>'
+          }
         </div>
-      `;
-      document.getElementById('latestActivity').innerHTML = activityHTML;
-    }
-    
-    if (data.system_status) {
-      updateSystemStatus(data.system_status, data.last_sync);
-    }
-  } catch (error) {
-    console.error('Dashboard load error:', error);
+        <div class="activity-info">
+          <div class="activity-name">${escapeHtml(scan.name)}</div>
+          <div class="activity-detail">${escapeHtml(scan.action)} &bull; ${escapeHtml(scan.rfid_uid)}</div>
+        </div>
+        <div class="activity-time">${escapeHtml(formatTime(scan.timestamp))}</div>
+      </div>
+    `;
+    activityEl.innerHTML = activityHTML;
+  } else {
+    activityEl.innerHTML = `
+      <div class="empty-state">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="12 6 12 12 16 14"></polyline>
+        </svg>
+        <p>No recent activity</p>
+      </div>
+    `;
   }
 }
 
-function updateSystemStatus(status, lastSync) {
+function renderDashboardError(message) {
+  ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(id => {
+    document.getElementById(id).textContent = '--';
+  });
+  document.getElementById('latestActivity').innerHTML =
+    `<div class="empty-state"><p>${escapeHtml(message)}</p></div>`;
+}
+
+const STATUS_ONLINE_VALUES = ['ONLINE', 'READY', 'CONNECTED', 'SYNCED'];
+const STATUS_UNKNOWN_VALUES = ['UNKNOWN', 'CHECKING', 'NEVER SEEN', 'DEGRADED'];
+
+function statusDotClass(value) {
+  const v = String(value || '').toUpperCase();
+  if (STATUS_ONLINE_VALUES.includes(v)) return 'online';
+  if (STATUS_UNKNOWN_VALUES.includes(v)) return 'warning';
+  return 'offline';
+}
+
+function headerStatusText(status) {
+  if (status.internet === 'DISCONNECTED') return { text: 'No Internet', cls: 'offline' };
+  if (status.google_sheets === 'ERROR') return { text: 'Backend Unreachable', cls: 'offline' };
+  if (status.esp32 === 'OFFLINE') return { text: 'Device Offline', cls: 'offline' };
+  if (status.esp32 === 'NEVER SEEN') return { text: 'Device Never Seen', cls: 'warning' };
+  if (status.esp32 === 'UNKNOWN') return { text: 'Device Unknown', cls: 'warning' };
+  return { text: 'System Online', cls: 'online' };
+}
+
+function updateSystemStatus(status, lastSync, lastSeen) {
   const statusMap = {
     'statusESP32': status.esp32,
     'statusRFID': status.rfid,
     'statusInternet': status.internet,
     'statusSheets': status.google_sheets
   };
-  
+
   for (const [id, value] of Object.entries(statusMap)) {
     const el = document.getElementById(id);
     if (el) {
-      const isOnline = value === 'ONLINE' || value === 'READY' || value === 'CONNECTED' || value === 'SYNCED';
-      el.innerHTML = `<span class="status-dot ${isOnline ? 'online' : 'offline'}"></span> ${value}`;
+      el.innerHTML = `<span class="status-dot ${statusDotClass(value)}"></span> ${escapeHtml(value)}`;
     }
   }
-  
+
+  const lastSeenEl = document.getElementById('deviceLastSeen');
+  if (lastSeenEl) {
+    lastSeenEl.textContent = lastSeen || '--';
+  }
+
   if (lastSync) {
     document.getElementById('lastSyncTime').textContent = formatTime(lastSync);
   }
+
+  const headerDot = document.getElementById('systemStatusDot');
+  const headerText = document.getElementById('systemStatusText');
+  if (headerDot && headerText) {
+    const header = headerStatusText(status);
+    headerDot.className = 'status-dot ' + header.cls;
+    headerText.textContent = header.text;
+  }
+}
+
+// ==================== TABLE MESSAGES ====================
+function setTableMessage(tbodyId, message, colspan) {
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-cell">${escapeHtml(message)}</td></tr>`;
 }
 
 // ==================== USERS ====================
 async function loadUsers() {
+  const seq = ++usersSeq;
   try {
     const response = await apiGet('get_users');
-    if (!response.success) return;
-    
+    if (seq !== usersSeq) return;
+
+    if (!response.success) {
+      setTableMessage('usersTableBody', 'Could not load users: ' + (response.message || 'unknown error'), 8);
+      return;
+    }
+
     usersData = response.data.users || [];
     renderUsersTable(usersData);
   } catch (error) {
+    if (seq !== usersSeq) return;
     console.error('Users load error:', error);
+    setTableMessage('usersTableBody', 'Could not reach the backend to load users. Retrying…', 8);
   }
 }
 
-function renderUsersTable(users) {
+function renderUsersTable(users, emptyMessage) {
   const tbody = document.getElementById('usersTableBody');
   
   if (users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No users registered</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">${escapeHtml(emptyMessage || 'No users registered')}</td></tr>`;
     return;
   }
   
@@ -384,17 +587,17 @@ function renderUsersTable(users) {
       <td><code>${escapeHtml(user.rfid_uid)}</code></td>
       <td>${escapeHtml(user.department)}</td>
       <td>${escapeHtml(user.user_type)}</td>
-      <td><span class="badge badge-${user.status.toLowerCase()}">${user.status}</span></td>
-      <td><span class="badge badge-${user.current_status.toLowerCase()}">${user.current_status}</span></td>
+      <td><span class="badge badge-${slug(user.status)}">${escapeHtml(user.status)}</span></td>
+      <td><span class="badge badge-${slug(user.current_status)}">${escapeHtml(user.current_status)}</span></td>
       <td>
         <div style="display:flex;gap:4px;">
-          <button class="btn-icon" onclick="editUser('${escapeHtml(user.rfid_uid)}')" title="Edit">
+          <button class="btn-icon" onclick="editUser('${escapeAttrJs(user.rfid_uid)}')" title="Edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path>
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path>
             </svg>
           </button>
-          <button class="btn-icon" onclick="toggleUserStatus('${escapeHtml(user.rfid_uid)}', '${user.status}')" title="${user.status === 'Active' ? 'Deactivate' : 'Activate'}">
+          <button class="btn-icon" onclick="toggleUserStatus('${escapeAttrJs(user.rfid_uid)}', '${escapeAttrJs(user.status)}')" title="${user.status === 'Active' ? 'Deactivate' : 'Activate'}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               ${user.status === 'Active' ? 
                 '<path d="M18.36 6.64a9 9 0 11-12.73 0M12 2v10"></path>' :
@@ -416,7 +619,7 @@ function filterUsers() {
     user.rfid_uid.toLowerCase().includes(query) ||
     user.department.toLowerCase().includes(query)
   );
-  renderUsersTable(filtered);
+  renderUsersTable(filtered, 'No matching users');
 }
 
 // ==================== USERS TAB NAVIGATION ====================
@@ -621,12 +824,34 @@ async function submitRegisterUser(e) {
   };
   
   try {
+    // The backend de-duplicates RFID cards only, so a duplicate User ID would
+    // silently create a second account with the same identity. Check first.
+    const usersResponse = await apiGet('get_users');
+    if (usersResponse && usersResponse.success && Array.isArray(usersResponse.data.users)) {
+      const existingUsers = usersResponse.data.users;
+      const duplicateUserId = existingUsers.find(
+        u => String(u.user_id || '').toLowerCase() === userId.toLowerCase()
+      );
+      if (duplicateUserId) {
+        showToast(`User ID ${userId} is already registered to ${duplicateUserId.name}`, 'error');
+        return;
+      }
+      const duplicateRfid = existingUsers.find(
+        u => String(u.rfid_uid || '').toLowerCase() === rfidUid.toLowerCase()
+      );
+      if (duplicateRfid) {
+        showToast(`RFID card is already registered to ${duplicateRfid.name}`, 'error');
+        return;
+      }
+    }
+
     const response = await apiCall('register_user', userData);
     if (response.success) {
       showToast('User registered successfully', 'success');
       resetRegisterForm();
       switchUsersTab('registered');
     } else {
+      if (response.session_expired) return;
       showToast(response.message || 'Registration failed', 'error');
     }
   } catch (error) {
@@ -636,15 +861,25 @@ async function submitRegisterUser(e) {
 
 // ==================== CURRENTLY INSIDE ====================
 async function loadCurrentInside() {
+  const seq = ++insideSeq;
   try {
     const response = await apiGet('get_current_inside');
-    if (!response.success) return;
-    
+    if (seq !== insideSeq) return;
+
+    if (!response.success) {
+      document.getElementById('insideCount').textContent = '--';
+      setTableMessage('insideTableBody', 'Could not load data: ' + (response.message || 'unknown error'), 6);
+      return;
+    }
+
     currentInsideData = response.data.users || [];
     document.getElementById('insideCount').textContent = response.data.count || 0;
     renderInsideTable(currentInsideData);
   } catch (error) {
+    if (seq !== insideSeq) return;
     console.error('Inside load error:', error);
+    document.getElementById('insideCount').textContent = '--';
+    setTableMessage('insideTableBody', 'Could not reach the backend to load data. Retrying…', 6);
   }
 }
 
@@ -661,15 +896,22 @@ function renderInsideTable(users) {
       <td><strong>${escapeHtml(user.name)}</strong></td>
       <td>${escapeHtml(user.user_id)}</td>
       <td>${escapeHtml(user.department)}</td>
-      <td>${user.entry_time}</td>
-      <td>${user.duration}</td>
+      <td>${escapeHtml(user.entry_time)}</td>
+      <td>${escapeHtml(user.duration)}</td>
       <td><span class="badge badge-inside">INSIDE</span></td>
     </tr>
   `).join('');
 }
 
 // ==================== HISTORY ====================
+// Debounced so typing in a filter box does not fire one request per keystroke.
+function scheduleHistoryLoad() {
+  if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+  historyDebounceTimer = setTimeout(loadHistory, FILTER_DEBOUNCE_MS);
+}
+
 async function loadHistory() {
+  const seq = ++historySeq;
   const params = {};
   
   const date = document.getElementById('historyDate').value;
@@ -688,12 +930,19 @@ async function loadHistory() {
   
   try {
     const response = await apiGet('get_history', params);
-    if (!response.success) return;
-    
+    if (seq !== historySeq) return;
+
+    if (!response.success) {
+      setTableMessage('historyTableBody', 'Could not load history: ' + (response.message || 'unknown error'), 7);
+      return;
+    }
+
     historyData = response.data.history || [];
     renderHistoryTable(historyData);
   } catch (error) {
+    if (seq !== historySeq) return;
     console.error('History load error:', error);
+    setTableMessage('historyTableBody', 'Could not reach the backend to load history. Retrying…', 7);
   }
 }
 
@@ -707,28 +956,58 @@ function renderHistoryTable(records) {
   
   tbody.innerHTML = records.map(record => `
     <tr>
-      <td>${record.date}</td>
-      <td>${record.time}</td>
+      <td>${escapeHtml(record.date)}</td>
+      <td>${escapeHtml(record.time)}</td>
       <td><strong>${escapeHtml(record.name)}</strong></td>
       <td>${escapeHtml(record.user_id)}</td>
       <td><code>${escapeHtml(record.rfid_uid)}</code></td>
-      <td><span class="badge badge-${record.action.toLowerCase()}">${record.action}</span></td>
-      <td><span class="badge badge-${record.status === 'AUTHORIZED' ? 'authorized' : 'denied'}">${record.status}</span></td>
+      <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
+      <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
     </tr>
   `).join('');
 }
 
 // ==================== REPORTS ====================
+function isoDateLocal(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Default range: last 7 days including today, so the page shows a report
+// immediately instead of an empty table until the user picks dates.
+function ensureReportDateRange() {
+  if (reportRangeInitialised) return;
+  const fromEl = document.getElementById('reportFrom');
+  const toEl = document.getElementById('reportTo');
+  if (!fromEl || !toEl) return;
+  if (fromEl.value && toEl.value) return;
+  const today = new Date();
+  fromEl.value = isoDateLocal(new Date(today.getTime() - 6 * 24 * 60 * 60 * 1000));
+  toEl.value = isoDateLocal(today);
+  reportRangeInitialised = true;
+}
+
 async function loadReport() {
+  const seq = ++reportSeq;
   const fromDate = document.getElementById('reportFrom').value;
   const toDate = document.getElementById('reportTo').value;
   
-  if (!fromDate || !toDate) return;
-  
+  if (!fromDate || !toDate) {
+    setTableMessage('reportTableBody', 'Select date range to generate report', 9);
+    return;
+  }
+
   try {
     const response = await apiGet('get_reports', { from_date: fromDate, to_date: toDate });
-    if (!response.success) return;
-    
+    if (seq !== reportSeq) return;
+
+    if (!response.success) {
+      setTableMessage('reportTableBody', 'Could not load report: ' + (response.message || 'unknown error'), 9);
+      return;
+    }
+
     const data = response.data;
     document.getElementById('reportEntries').textContent = data.total_entries || 0;
     document.getElementById('reportExits').textContent = data.total_exits || 0;
@@ -738,7 +1017,9 @@ async function loadReport() {
     reportData = data.data || [];
     renderReportTable(reportData);
   } catch (error) {
+    if (seq !== reportSeq) return;
     console.error('Report load error:', error);
+    setTableMessage('reportTableBody', 'Could not reach the backend to load the report. Retrying…', 9);
   }
 }
 
@@ -752,15 +1033,15 @@ function renderReportTable(records) {
   
   tbody.innerHTML = records.map(record => `
     <tr>
-      <td>${record.sno}</td>
-      <td>${record.date}</td>
+      <td>${escapeHtml(record.sno)}</td>
+      <td>${escapeHtml(record.date)}</td>
       <td><code>${escapeHtml(record.rfid_uid)}</code></td>
       <td><strong>${escapeHtml(record.name)}</strong></td>
       <td>${escapeHtml(record.user_id)}</td>
       <td>${escapeHtml(record.department || '')}</td>
       <td>${escapeHtml(record.user_type || '')}</td>
-      <td><span class="badge badge-${record.action.toLowerCase()}">${record.action}</span></td>
-      <td><span class="badge badge-${record.status === 'AUTHORIZED' ? 'authorized' : 'denied'}">${record.status}</span></td>
+      <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
+      <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
     </tr>
   `).join('');
 }
@@ -777,6 +1058,7 @@ async function exportExcel() {
   
   try {
     const response = await apiCall('export_excel', { from_date: fromDate, to_date: toDate });
+    if (response.session_expired) return;
     if (!response.success || !response.data.data) {
       showToast('No data to export', 'error');
       return;
@@ -836,6 +1118,8 @@ function editUser(rfidUid) {
     if (response.success) {
       showToast('User updated successfully', 'success');
       loadUsers();
+    } else if (response.session_expired) {
+      return;
     } else {
       showToast(response.message || 'Update failed', 'error');
     }
@@ -857,6 +1141,8 @@ async function toggleUserStatus(rfidUid, currentStatus) {
     if (response.success) {
       showToast(`User ${action}d successfully`, 'success');
       loadUsers();
+    } else if (response.session_expired) {
+      return;
     } else {
       showToast(response.message || 'Update failed', 'error');
     }
@@ -890,10 +1176,31 @@ function formatTime(timestamp) {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
+  if (str === null || str === undefined) return '';
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = String(str);
   return div.innerHTML;
+}
+
+// Escapes a value that is placed inside a single-quoted JavaScript string in
+// an HTML attribute (e.g. onclick="editUser('...')"). The HTML attribute is
+// decoded before the JS runs, so the quote must be escaped for JS, not as an
+// HTML entity.
+function escapeAttrJs(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'");
+}
+
+// Safe CSS class fragment for a value that comes from the backend/sheet.
+function slug(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
 }
 
 // ==================== DEMO DATA ====================

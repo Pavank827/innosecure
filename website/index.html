@@ -43,10 +43,9 @@
       </form>
       <div class="login-footer">
         <p>Don't have an admin account?</p>
-       <button type="button" class="btn btn-outline btn-full"
-onclick="document.getElementById('loginScreen').style.display='none'; document.getElementById('createAccountScreen').style.display='flex';">
-    Create Admin Account
-</button>
+        <button type="button" class="btn btn-outline btn-full" onclick="showCreateAccount()">
+          Create Admin Account
+        </button>
       </div>
     </div>
   </div>
@@ -95,7 +94,7 @@ onclick="document.getElementById('loginScreen').style.display='none'; document.g
       </form>
       <div class="login-footer">
         <p>Already have an admin account?</p>
-        <button class="btn btn-outline btn-full" onclick="showLogin()">
+        <button class="btn btn-outline btn-full" onclick="closeCreateAccount()">
           Back to Login
         </button>
       </div>
@@ -130,9 +129,18 @@ onclick="document.getElementById('loginScreen').style.display='none'; document.g
       </div>
       <div class="header-right">
         <div class="system-status-header" id="systemStatusHeader">
-          <span class="status-dot online"></span>
-          <span>System Online</span>
+          <span class="status-dot warning" id="systemStatusDot"></span>
+          <span id="systemStatusText">Checking&hellip;</span>
         </div>
+        <button class="btn btn-outline btn-sm" onclick="showCreateAccountForSession()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+            <circle cx="8.5" cy="7" r="4"></circle>
+            <line x1="20" y1="8" x2="20" y2="14"></line>
+            <line x1="23" y1="11" x2="17" y2="11"></line>
+          </svg>
+          Add Admin
+        </button>
         <button class="btn btn-outline btn-sm" onclick="logout()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"></path>
@@ -297,26 +305,30 @@ onclick="document.getElementById('loginScreen').style.display='none'; document.g
                 <div class="status-item">
                   <span class="status-label">ESP32</span>
                   <span class="status-value" id="statusESP32">
-                    <span class="status-dot online"></span> ONLINE
+                    <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">RFID Reader</span>
                   <span class="status-value" id="statusRFID">
-                    <span class="status-dot online"></span> READY
+                    <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">Internet</span>
                   <span class="status-value" id="statusInternet">
-                    <span class="status-dot online"></span> CONNECTED
+                    <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">Google Sheets</span>
                   <span class="status-value" id="statusSheets">
-                    <span class="status-dot online"></span> SYNCED
+                    <span class="status-dot warning"></span> CHECKING
                   </span>
+                </div>
+                <div class="status-item">
+                  <span class="status-label">Device Last Seen</span>
+                  <span class="status-value" id="deviceLastSeen">--</span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">Last Sync</span>
@@ -522,11 +534,11 @@ onclick="document.getElementById('loginScreen').style.display='none'; document.g
               </div>
               <div class="form-group">
                 <label for="historyName">Name</label>
-                <input type="text" id="historyName" placeholder="Filter by name" oninput="loadHistory()">
+                <input type="text" id="historyName" placeholder="Filter by name" oninput="scheduleHistoryLoad()">
               </div>
               <div class="form-group">
                 <label for="historyRFID">RFID</label>
-                <input type="text" id="historyRFID" placeholder="Filter by RFID" oninput="loadHistory()">
+                <input type="text" id="historyRFID" placeholder="Filter by RFID" oninput="scheduleHistoryLoad()">
               </div>
               <div class="form-group">
                 <label for="historyAction">Action</label>
