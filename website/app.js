@@ -6,6 +6,20 @@ const REFRESH_INTERVAL = 10000;
 const FILTER_DEBOUNCE_MS = 400;
 const DEMO_MODE = false;
 
+// Cache policy (milliseconds). Only data that has not changed since the last
+// fetch may be reused; the 10-second auto refresh still runs on its own timer.
+const NAV_CACHE_TTL_MS = 8000;          // re-entering a page within 8 s reuses data
+const USERS_REFRESH_TTL_MS = 10000;     // users list at most once per refresh tick
+const REPORT_CACHE_TTL_MS = 25000;      // reports change slowly, cache a little longer
+const USERS_DUPLICATE_TTL_MS = 30000;   // local duplicate-User-ID check window
+const DASHBOARD_CACHE_TTL_MS = 300000;  // last-known stats for an instant first paint
+
+// Circuit breaker for a failing host: after a failed attempt chain, further
+// calls fail fast instead of hammering the endpoint (Google outage behaviour).
+const API_MAX_ATTEMPTS = 3;
+const API_RETRY_DELAY_MS = 600;
+const HOST_COOLDOWN_MS = [15000, 30000, 45000, 60000];
+
 // ==================== STATE ====================
 let currentPage = 'dashboard';
 let refreshTimer = null;
@@ -18,13 +32,87 @@ let usersData = [];
 let currentInsideData = [];
 let historyData = [];
 let reportData = [];
-let dashboardSeq = 0;
+let dashboardStatsSeq = 0;
+let deviceSeq = 0;
 let usersSeq = 0;
 let insideSeq = 0;
 let historySeq = 0;
 let reportSeq = 0;
 let historyDebounceTimer = null;
 let reportRangeInitialised = false;
+
+// Last known payloads. They are only used to paint immediately; every screen
+// still revalidates with the backend and shows a real error state on failure.
+let lastDashboardData = null;
+let lastSyncValue = '';
+let sheetsState = 'pending';   // 'pending' | 'ok' | 'error'
+let edgeState = 'pending';     // 'pending' | 'ok' | 'error'
+let edgeStatusValue = null;
+let usersLoaded = false;
+let usersLoadedAt = 0;
+
+// ==================== MICRO-OPTIMISATIONS ====================
+const domRefs = new Map();
+const pageEls = new Map();
+const navEls = new Map();
+const inflightRequests = new Map();
+const responseCache = new Map();
+const hostHealth = new Map();
+
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+// Element lookup is one of the hottest paths (tables, status, refresh loop).
+function $(id) {
+  let el = domRefs.get(id);
+  if (el === undefined) {
+    el = document.getElementById(id);
+    if (el) domRefs.set(id, el);
+  }
+  return el;
+}
+
+function setText(id, value) {
+  const el = $(id);
+  if (el && el.textContent !== value) el.textContent = value;
+}
+
+function setHTML(el, html) {
+  if (el && el.__renderedHtml !== html) {
+    el.__renderedHtml = html;
+    el.innerHTML = html;
+  }
+}
+
+function setLoading(id, loading) {
+  const el = $(id);
+  if (el) el.classList.toggle('loading', !!loading);
+}
+
+// Escapes without touching the DOM: the previous implementation created a
+// <div> for every value, which dominated table render time.
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[&<>"']/g, ch => HTML_ESCAPES[ch]);
+}
+
+// Safe CSS class fragment for a value that comes from the backend/sheet.
+function slug(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+}
+
+function formatTime(timestamp) {
+  if (!timestamp) return '--';
+  const parts = timestamp.split(' ');
+  if (parts.length >= 2) {
+    return parts[1];
+  }
+  return timestamp;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', () => {
@@ -42,41 +130,60 @@ function checkAuth() {
 }
 
 function setupEventListeners() {
-  document.getElementById('loginForm').addEventListener('submit', handleLogin);
-  document.getElementById('createAccountForm').addEventListener('submit', handleCreateAccount);
+  $('loginForm').addEventListener('submit', handleLogin);
+  $('createAccountForm').addEventListener('submit', handleCreateAccount);
+  // One delegated listener instead of an inline handler per table row.
+  $('usersTableBody').addEventListener('click', handleUsersTableClick);
+  window.addEventListener('online', renderSystemStatus);
+  window.addEventListener('offline', renderSystemStatus);
+  document.addEventListener('visibilitychange', () => {
+    // Refresh only while the tab is visible; refresh immediately on return.
+    if (!document.hidden && isAuthenticated) refreshNow();
+  });
+}
+
+function handleUsersTableClick(event) {
+  const button = event.target.closest('[data-user-action]');
+  if (!button || !$('usersTableBody').contains(button)) return;
+  const rfidUid = button.getAttribute('data-rfid');
+  if (button.getAttribute('data-user-action') === 'edit') {
+    editUser(rfidUid);
+  } else {
+    toggleUserStatus(rfidUid, button.getAttribute('data-status'));
+  }
 }
 
 // ==================== SCREEN NAVIGATION ====================
 function showLogin() {
-  document.getElementById('loginScreen').style.display = 'flex';
-  document.getElementById('createAccountScreen').style.display = 'none';
-  document.getElementById('loginError').style.display = 'none';
-  document.getElementById('createAccountForm').reset();
-  document.getElementById('createAccountError').style.display = 'none';
-  document.getElementById('createAccountSuccess').style.display = 'none';
+  $('loginScreen').style.display = 'flex';
+  $('createAccountScreen').style.display = 'none';
+  $('loginError').style.display = 'none';
+  $('createAccountForm').reset();
+  $('createAccountError').style.display = 'none';
+  $('createAccountSuccess').style.display = 'none';
 }
 
 function showCreateAccount() {
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('createAccountScreen').style.display = 'flex';
-  document.getElementById('loginError').style.display = 'none';
+  $('loginScreen').style.display = 'none';
+  $('createAccountScreen').style.display = 'flex';
+  $('loginError').style.display = 'none';
 }
 
 // Open the account form from inside the app (header "Add Admin" button).
 // The session token is still in memory there, which the backend requires
 // for create_admin_account once at least one account exists.
 function showCreateAccountForSession() {
-  document.getElementById('mainApp').style.display = 'none';
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('createAccountScreen').style.display = 'flex';
-  document.getElementById('createAccountError').style.display = 'none';
-  document.getElementById('createAccountSuccess').style.display = 'none';
-  document.getElementById('createAccountForm').reset();
+  $('mainApp').style.display = 'none';
+  $('loginScreen').style.display = 'none';
+  $('createAccountScreen').style.display = 'flex';
+  $('createAccountError').style.display = 'none';
+  $('createAccountSuccess').style.display = 'none';
+  $('createAccountForm').reset();
 }
 
 // Leave the account form: back to the app when logged in, otherwise to login.
 function closeCreateAccount() {
-  document.getElementById('createAccountScreen').style.display = 'none';
+  $('createAccountScreen').style.display = 'none';
   if (isAuthenticated) {
     showMainApp();
   } else {
@@ -88,10 +195,6 @@ function closeCreateAccount() {
 function getAdminAccounts() {
   const accounts = localStorage.getItem('innosecure_admin_accounts');
   return accounts ? JSON.parse(accounts) : [];
-}
-
-function saveAdminAccounts(accounts) {
-  localStorage.setItem('innosecure_admin_accounts', JSON.stringify(accounts));
 }
 
 function hashPassword(password) {
@@ -107,13 +210,13 @@ function hashPassword(password) {
 async function handleCreateAccount(e) {
   e.preventDefault();
 
-  const fullName = document.getElementById('createFullName').value.trim();
-  const username = document.getElementById('createUsername').value.trim();
-  const password = document.getElementById('createPassword').value;
-  const confirmPassword = document.getElementById('createConfirmPassword').value;
+  const fullName = $('createFullName').value.trim();
+  const username = $('createUsername').value.trim();
+  const password = $('createPassword').value;
+  const confirmPassword = $('createConfirmPassword').value;
 
-  const errorEl = document.getElementById('createAccountError');
-  const successEl = document.getElementById('createAccountSuccess');
+  const errorEl = $('createAccountError');
+  const successEl = $('createAccountSuccess');
 
   errorEl.style.display = 'none';
   successEl.style.display = 'none';
@@ -150,7 +253,7 @@ async function handleCreateAccount(e) {
       successEl.textContent = 'Admin account created successfully.';
       successEl.style.display = 'block';
 
-      document.getElementById('createAccountForm').reset();
+      $('createAccountForm').reset();
 
       setTimeout(() => {
         closeCreateAccount();
@@ -178,25 +281,25 @@ async function handleCreateAccount(e) {
 // ==================== AUTHENTICATION ====================
 async function handleLogin(e) {
   e.preventDefault();
-  const username = document.getElementById('loginUsername').value;
-  const password = document.getElementById('loginPassword').value;
-  const errorEl = document.getElementById('loginError');
-  
+  const username = $('loginUsername').value;
+  const password = $('loginPassword').value;
+  const errorEl = $('loginError');
+
   errorEl.style.display = 'none';
-  
+
   if (DEMO_MODE) {
     const accounts = getAdminAccounts();
-    
+
     if (accounts.length === 0) {
       errorEl.textContent = 'No admin account found. Please create an admin account.';
       errorEl.style.display = 'block';
       return;
     }
-    
+
     const account = accounts.find(
       a => a.username.toLowerCase() === username.toLowerCase() && a.passwordHash === hashPassword(password)
     );
-    
+
     if (account) {
       isAuthenticated = true;
       authToken = 'demo_token';
@@ -205,12 +308,12 @@ async function handleLogin(e) {
       showMainApp();
       return;
     }
-    
+
     errorEl.textContent = 'Invalid username or password.';
     errorEl.style.display = 'block';
     return;
   }
-  
+
   try {
     const response = await apiCall('login', { username, password });
     if (response.success) {
@@ -234,18 +337,19 @@ function logout() {
   authToken = null;
   sessionStorage.removeItem('authToken');
   sessionStorage.removeItem('adminUser');
-  document.getElementById('loginScreen').style.display = 'flex';
-  document.getElementById('createAccountScreen').style.display = 'none';
-  document.getElementById('mainApp').style.display = 'none';
-  document.getElementById('loginUsername').value = '';
-  document.getElementById('loginPassword').value = '';
-  document.getElementById('loginError').style.display = 'none';
+  $('loginScreen').style.display = 'flex';
+  $('createAccountScreen').style.display = 'none';
+  $('mainApp').style.display = 'none';
+  $('loginUsername').value = '';
+  $('loginPassword').value = '';
+  $('loginError').style.display = 'none';
   if (refreshTimer) clearInterval(refreshTimer);
 }
 
 function showMainApp() {
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('mainApp').style.display = 'flex';
+  $('loginScreen').style.display = 'none';
+  $('mainApp').style.display = 'flex';
+  if (!lastDashboardData) lastDashboardData = readDashboardCache();
   startAutoRefresh();
   loadDashboard();
 }
@@ -253,28 +357,93 @@ function showMainApp() {
 // ==================== API CALLS ====================
 // Google's redirect target (script.googleusercontent.com/macros/echo) intermittently
 // answers 404/5xx. Without a retry a single blip surfaces as "Connection failed".
-const API_MAX_ATTEMPTS = 3;
-const API_RETRY_DELAY_MS = 600;
 
-async function fetchJSON(url, options = {}) {
+function hostOf(url) {
+  try { return new URL(url).origin; } catch (error) { return url; }
+}
+
+function hostAllowsRequest(url) {
+  const health = hostHealth.get(hostOf(url));
+  return !health || Date.now() >= health.openUntil;
+}
+
+function hostRecordFailure(url) {
+  const key = hostOf(url);
+  const health = hostHealth.get(key) || { fails: 0, openUntil: 0 };
+  health.fails += 1;
+  const index = Math.min(health.fails - 1, HOST_COOLDOWN_MS.length - 1);
+  health.openUntil = Date.now() + HOST_COOLDOWN_MS[index];
+  hostHealth.set(key, health);
+}
+
+function hostRecordSuccess(url) {
+  hostHealth.delete(hostOf(url));
+}
+
+function hostIsSick(url) {
+  const health = hostHealth.get(hostOf(url));
+  return !!health && health.fails > 0;
+}
+
+async function fetchJSON(url, options = {}, attemptsOverride) {
+  // Circuit open: fail immediately instead of adding traffic to a dead host.
+  if (!hostAllowsRequest(url)) {
+    const cooldownError = new Error('Host is cooling down after repeated failures');
+    cooldownError.cooldown = true;
+    throw cooldownError;
+  }
+
+  // While the host is recovering, probe with a single request; healthy hosts
+  // keep the full transient-blip retry chain.
+  const attempts = attemptsOverride || (hostIsSick(url) ? 1 : API_MAX_ATTEMPTS);
   let lastError = null;
 
-  for (let attempt = 1; attempt <= API_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       const response = await fetch(url, options);
       if (!response.ok) throw new Error('HTTP error ' + response.status);
 
-      return await response.json();
+      const json = await response.json();
+      hostRecordSuccess(url);
+      return json;
     } catch (error) {
       lastError = error;
-      if (attempt < API_MAX_ATTEMPTS) {
-        await new Promise(resolve => setTimeout(resolve, API_RETRY_DELAY_MS * attempt));
+      if (attempt < attempts) {
+        await sleep(API_RETRY_DELAY_MS * attempt);
       }
     }
   }
 
+  hostRecordFailure(url);
   console.error('API Error:', lastError);
   throw lastError;
+}
+
+// Same endpoint requested twice at the same time shares one request.
+function singleFlight(key, task) {
+  const existing = inflightRequests.get(key);
+  if (existing) return existing;
+  const promise = Promise.resolve()
+    .then(task)
+    .finally(() => {
+      if (inflightRequests.get(key) === promise) inflightRequests.delete(key);
+    });
+  inflightRequests.set(key, promise);
+  return promise;
+}
+
+function cacheRead(key) {
+  const entry = responseCache.get(key);
+  return entry || null;
+}
+
+function cacheWrite(key, value) {
+  responseCache.set(key, { value: value, ts: Date.now() });
+}
+
+function cacheIsFresh(key, minAge) {
+  const entry = cacheRead(key);
+  return !!entry && (Date.now() - entry.ts) < minAge;
 }
 
 async function apiCall(action, data = {}) {
@@ -317,35 +486,63 @@ async function apiGet(action, params = {}) {
     return getDemoData(action, params);
   }
 
-  const queryString = new URLSearchParams({ action, ...params }).toString();
-  return fetchJSON(`${API_URL}?${queryString}`);
+  const key = `GET ${action} ${JSON.stringify(params)}`;
+  return singleFlight(key, () => {
+    const queryString = new URLSearchParams({ action, ...params }).toString();
+    return fetchJSON(`${API_URL}?${queryString}`);
+  });
 }
 
 // ==================== NAVIGATION ====================
+function allPageEls() {
+  if (!pageEls.has('all')) pageEls.set('all', document.querySelectorAll('.page'));
+  return pageEls.get('all');
+}
+
+function pageEl(page) {
+  if (!pageEls.has(page)) pageEls.set(page, document.getElementById(`page-${page}`));
+  return pageEls.get(page);
+}
+
+function navEl(page) {
+  if (!navEls.has(page)) navEls.set(page, document.querySelector(`.nav-item[data-page="${page}"]`));
+  return navEls.get(page);
+}
+
 function navigateTo(page) {
   currentPage = page;
-  
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.getElementById(`page-${page}`).classList.add('active');
-  
+
+  allPageEls().forEach(p => p.classList.remove('active'));
+  const target = pageEl(page);
+  if (target) target.classList.add('active');
+
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.querySelector(`[data-page="${page}"]`).classList.add('active');
-  
-  loadPageData(page);
+  const nav = navEl(page);
+  if (nav) nav.classList.add('active');
+
+  loadPageData(page, false);
 }
 
 function toggleSidebar() {
-  document.getElementById('sidebar').classList.toggle('open');
+  $('sidebar').classList.toggle('open');
 }
 
-function loadPageData(page) {
+// Fetches only what the visible page needs. The periodic refresh passes
+// isRefreshTick=true so live pages always ask for fresh data while static
+// pages (reports, users) reuse a recent response.
+function loadPageData(page, isRefreshTick) {
+  let task;
   switch (page) {
-    case 'dashboard': loadDashboard(); break;
-    case 'users': refreshUsersTab(); break;
-    case 'inside': loadCurrentInside(); break;
-    case 'history': loadHistory(); break;
-    case 'reports': ensureReportDateRange(); loadReport(); break;
+    case 'dashboard': task = loadDashboard({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
+    case 'users': task = refreshUsersTab(isRefreshTick); break;
+    case 'inside': task = loadCurrentInside({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
+    case 'history': task = loadHistory({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
+    case 'reports':
+      ensureReportDateRange();
+      task = loadReport({ minAge: REPORT_CACHE_TTL_MS });
+      break;
   }
+  return Promise.resolve(task).catch(error => console.error('Page data load failed:', error));
 }
 
 // ==================== AUTO REFRESH ====================
@@ -358,8 +555,11 @@ function startAutoRefresh() {
 // 10 s timer would otherwise pile new requests on top of unfinished ones.
 function refreshNow() {
   if (refreshInFlight) return;
+  // Nothing to refresh while the tab is hidden; visibilitychange refreshes
+  // immediately when the user comes back.
+  if (document.hidden) return;
   refreshInFlight = true;
-  Promise.resolve(loadPageData(currentPage)).finally(() => {
+  loadPageData(currentPage, true).finally(() => {
     refreshInFlight = false;
   });
 }
@@ -369,71 +569,140 @@ function refreshNow() {
 //   - Apps Script (statistics, latest scan, last sync)
 //   - Cloudflare Worker action=device_status (real ESP32 last-seen heartbeat)
 // Apps Script returns a HARDCODED system_status, so it is never used here.
-async function loadDashboard() {
-  const seq = ++dashboardSeq;
-
-  const [gas, edge] = await Promise.allSettled([
-    apiGet('get_dashboard_data'),
-    fetchEdgeDeviceStatus()
+// They are fetched and rendered independently: a slow or failing Google never
+// blocks the device card, and the page shell paints before either answers.
+function loadDashboard(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  return Promise.allSettled([
+    loadDashboardStats({ minAge }),
+    loadDeviceStatus({ minAge })
   ]);
-  if (seq !== dashboardSeq) return;
+}
 
-  const gasOk = gas.status === 'fulfilled' && gas.value && gas.value.success;
-  const edgeStatus = edge.status === 'fulfilled' ? edge.value : null;
-  const edgeError = edge.status === 'rejected';
+async function loadDashboardStats(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  const seq = ++dashboardStatsSeq;
 
-  if (gasOk) {
-    renderDashboardStats(gas.value.data || {});
-  } else {
-    const message = gas.status === 'rejected'
-      ? 'Could not reach the backend (Google Apps Script). Retrying…'
-      : 'Backend returned an error: ' + ((gas.value && gas.value.message) || 'unknown');
-    renderDashboardError(message);
+  // Paint the last known numbers immediately, then replace with live data.
+  const cached = cacheRead('dashboardStats');
+  if (cached) {
+    lastDashboardData = cached.value;
+    lastSyncValue = lastDashboardData.last_sync || '';
+  }
+  if (lastDashboardData) renderDashboardStats(lastDashboardData);
+
+  // Revalidated within 8 s of the previous success: no extra Apps Script call.
+  if (!options.force && cached && (Date.now() - cached.ts) < minAge) {
+    if (seq === dashboardStatsSeq) renderSystemStatus();
+    return;
   }
 
-  updateSystemStatus(buildSystemStatus(gasOk, edgeStatus, edgeError), gasOk ? gas.value.data.last_sync : '', lastSeenLabel(edgeStatus));
+  try {
+    const response = await apiGet('get_dashboard_data');
+    if (seq !== dashboardStatsSeq) return;
+
+    if (response && response.success) {
+      sheetsState = 'ok';
+      lastDashboardData = response.data || {};
+      lastSyncValue = lastDashboardData.last_sync || '';
+      cacheWrite('dashboardStats', lastDashboardData);
+      writeDashboardCache(lastDashboardData);
+      renderDashboardStats(lastDashboardData);
+    } else {
+      sheetsState = 'error';
+      responseCache.delete('dashboardStats');
+      renderDashboardError('Backend returned an error: ' + ((response && response.message) || 'unknown'));
+    }
+  } catch (error) {
+    if (seq !== dashboardStatsSeq) return;
+    sheetsState = 'error';
+    // A failed call invalidates the entry: a later navigation must not paint
+    // numbers the backend has not confirmed since the failure.
+    responseCache.delete('dashboardStats');
+    renderDashboardError('Could not reach the backend (Google Apps Script). Retrying…');
+  }
+
+  if (seq === dashboardStatsSeq) renderSystemStatus();
 }
 
 // Device status is read-only and public on the Worker, so no API key is sent.
-async function fetchEdgeDeviceStatus() {
-  const response = await fetch(`${EDGE_API_URL}?action=device_status`, {
-    headers: { 'Accept': 'application/json' }
+function fetchEdgeDeviceStatus(attempts) {
+  // Same guarantee as apiGet: two overlapping loads share one heartbeat call.
+  return singleFlight('GET device_status', async () => {
+    const json = await fetchJSON(`${EDGE_API_URL}?action=device_status`, {
+      headers: { 'Accept': 'application/json' }
+    }, attempts);
+    if (!json.success || !json.data) throw new Error(json.message || 'device_status failed');
+    return json.data;
   });
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-  const json = await response.json();
-  if (!json.success || !json.data) throw new Error(json.message || 'device_status failed');
-  return json.data;
 }
 
-function buildSystemStatus(gasOk, edgeStatus, edgeError) {
+async function loadDeviceStatus(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  const seq = ++deviceSeq;
+
+  // The heartbeat payload carries its own last-seen timestamp, so reusing a
+  // reply that is seconds old still shows an honest age.
+  const cached = cacheRead('deviceStatus');
+  if (cached && (Date.now() - cached.ts) < minAge) {
+    edgeStatusValue = cached.value;
+    edgeState = 'ok';
+    if (seq === deviceSeq) renderSystemStatus();
+    return;
+  }
+
+  try {
+    // No retry chain here: the Worker answers in milliseconds and a failed
+    // heartbeat should surface as UNKNOWN right away.
+    edgeStatusValue = await fetchEdgeDeviceStatus(1);
+    edgeState = 'ok';
+    cacheWrite('deviceStatus', edgeStatusValue);
+  } catch (error) {
+    edgeStatusValue = null;
+    edgeState = 'error';
+    // Do not let an earlier success mask a failed heartbeat.
+    responseCache.delete('deviceStatus');
+  }
+  if (seq !== deviceSeq) return;
+  renderSystemStatus();
+}
+
+function buildSystemStatus() {
   let esp32 = 'UNKNOWN';
   let rfid = 'UNKNOWN';
   let lastSeen = null;
 
-  if (edgeStatus) {
-    lastSeen = edgeStatus;
-    if (edgeStatus.state === 'ONLINE') {
+  if (edgeState === 'pending') {
+    esp32 = 'CHECKING';
+    rfid = 'CHECKING';
+  } else if (edgeState === 'error') {
+    esp32 = 'UNKNOWN';
+    rfid = 'UNKNOWN';
+  } else if (edgeStatusValue) {
+    lastSeen = edgeStatusValue;
+    if (edgeStatusValue.state === 'ONLINE') {
       esp32 = 'ONLINE';
       rfid = 'READY';
-    } else if (edgeStatus.state === 'OFFLINE') {
+    } else if (edgeStatusValue.state === 'OFFLINE') {
       esp32 = 'OFFLINE';
       rfid = 'NOT READY';
-    } else if (edgeStatus.state === 'NEVER_SEEN') {
+    } else if (edgeStatusValue.state === 'NEVER_SEEN') {
       esp32 = 'NEVER SEEN';
       rfid = 'UNKNOWN';
     }
-  } else if (edgeError) {
-    esp32 = 'UNKNOWN';
-    rfid = 'UNKNOWN';
   }
 
   return {
     esp32: esp32,
     rfid: rfid,
     internet: navigator.onLine ? 'CONNECTED' : 'DISCONNECTED',
-    google_sheets: gasOk ? 'SYNCED' : 'ERROR',
+    google_sheets: sheetsState === 'ok' ? 'SYNCED' : sheetsState === 'error' ? 'ERROR' : 'CHECKING',
     last_seen: lastSeen
   };
+}
+
+function renderSystemStatus() {
+  updateSystemStatus(buildSystemStatus(), lastSyncValue, lastSeenLabel(edgeStatusValue));
 }
 
 function lastSeenLabel(edgeStatus) {
@@ -446,12 +715,13 @@ function lastSeenLabel(edgeStatus) {
 }
 
 function renderDashboardStats(data) {
-  document.getElementById('statRegistered').textContent = data.registered_users || 0;
-  document.getElementById('statInside').textContent = data.currently_inside || 0;
-  document.getElementById('statEntries').textContent = data.today_entries || 0;
-  document.getElementById('statExits').textContent = data.today_exits || 0;
+  setText('statRegistered', String(data.registered_users || 0));
+  setText('statInside', String(data.currently_inside || 0));
+  setText('statEntries', String(data.today_entries || 0));
+  setText('statExits', String(data.today_exits || 0));
+  ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(setLoadingDone);
 
-  const activityEl = document.getElementById('latestActivity');
+  const activityEl = $('latestActivity');
   if (data.latest_scan) {
     const scan = data.latest_scan;
     const scanAction = String(scan.action || '').toUpperCase();
@@ -470,9 +740,9 @@ function renderDashboardStats(data) {
         <div class="activity-time">${escapeHtml(formatTime(scan.timestamp))}</div>
       </div>
     `;
-    activityEl.innerHTML = activityHTML;
+    setHTML(activityEl, activityHTML);
   } else {
-    activityEl.innerHTML = `
+    setHTML(activityEl, `
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
           <circle cx="12" cy="12" r="10"></circle>
@@ -480,16 +750,20 @@ function renderDashboardStats(data) {
         </svg>
         <p>No recent activity</p>
       </div>
-    `;
+    `);
   }
+}
+
+function setLoadingDone(id) {
+  setLoading(id, false);
 }
 
 function renderDashboardError(message) {
   ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(id => {
-    document.getElementById(id).textContent = '--';
+    setText(id, '--');
+    setLoadingDone(id);
   });
-  document.getElementById('latestActivity').innerHTML =
-    `<div class="empty-state"><p>${escapeHtml(message)}</p></div>`;
+  setHTML($('latestActivity'), `<div class="empty-state"><p>${escapeHtml(message)}</p></div>`);
 }
 
 const STATUS_ONLINE_VALUES = ['ONLINE', 'READY', 'CONNECTED', 'SYNCED'];
@@ -505,6 +779,8 @@ function statusDotClass(value) {
 function headerStatusText(status) {
   if (status.internet === 'DISCONNECTED') return { text: 'No Internet', cls: 'offline' };
   if (status.google_sheets === 'ERROR') return { text: 'Backend Unreachable', cls: 'offline' };
+  // The backend has not answered yet: never claim the system is online.
+  if (status.google_sheets === 'CHECKING') return { text: 'Checking…', cls: 'warning' };
   if (status.esp32 === 'OFFLINE') return { text: 'Device Offline', cls: 'offline' };
   if (status.esp32 === 'NEVER SEEN') return { text: 'Device Never Seen', cls: 'warning' };
   if (status.esp32 === 'UNKNOWN') return { text: 'Device Unknown', cls: 'warning' };
@@ -520,39 +796,50 @@ function updateSystemStatus(status, lastSync, lastSeen) {
   };
 
   for (const [id, value] of Object.entries(statusMap)) {
-    const el = document.getElementById(id);
+    const el = $(id);
     if (el) {
-      el.innerHTML = `<span class="status-dot ${statusDotClass(value)}"></span> ${escapeHtml(value)}`;
+      setHTML(el, `<span class="status-dot ${statusDotClass(value)}"></span> ${escapeHtml(value)}`);
+      setLoading(id, value === 'CHECKING');
     }
   }
 
-  const lastSeenEl = document.getElementById('deviceLastSeen');
-  if (lastSeenEl) {
-    lastSeenEl.textContent = lastSeen || '--';
-  }
+  setText('deviceLastSeen', lastSeen || '--');
 
   if (lastSync) {
-    document.getElementById('lastSyncTime').textContent = formatTime(lastSync);
+    setText('lastSyncTime', formatTime(lastSync));
   }
 
-  const headerDot = document.getElementById('systemStatusDot');
-  const headerText = document.getElementById('systemStatusText');
+  const headerDot = $('systemStatusDot');
+  const headerText = $('systemStatusText');
   if (headerDot && headerText) {
     const header = headerStatusText(status);
-    headerDot.className = 'status-dot ' + header.cls;
-    headerText.textContent = header.text;
+    if (headerDot.className !== 'status-dot ' + header.cls) headerDot.className = 'status-dot ' + header.cls;
+    setText('systemStatusText', header.text);
   }
 }
 
 // ==================== TABLE MESSAGES ====================
 function setTableMessage(tbodyId, message, colspan) {
-  const tbody = document.getElementById(tbodyId);
+  const tbody = $(tbodyId);
   if (!tbody) return;
-  tbody.innerHTML = `<tr><td colspan="${colspan}" class="empty-cell">${escapeHtml(message)}</td></tr>`;
+  setHTML(tbody, `<tr><td colspan="${colspan}" class="empty-cell">${escapeHtml(message)}</td></tr>`);
 }
 
 // ==================== USERS ====================
-async function loadUsers() {
+async function loadUsers(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  const cached = cacheRead('users');
+
+  // Show what we already have first so switching tabs feels instant.
+  if (cached && (usersLoaded || Array.isArray(cached.value))) {
+    usersData = cached.value;
+    usersLoaded = true;
+    usersLoadedAt = cached.ts;
+    renderCurrentUsersView();
+  }
+
+  if (!options.force && cached && (Date.now() - cached.ts) < minAge) return;
+
   const seq = ++usersSeq;
   try {
     const response = await apiGet('get_users');
@@ -564,7 +851,10 @@ async function loadUsers() {
     }
 
     usersData = response.data.users || [];
-    renderUsersTable(usersData);
+    usersLoaded = true;
+    usersLoadedAt = Date.now();
+    cacheWrite('users', usersData);
+    renderCurrentUsersView();
   } catch (error) {
     if (seq !== usersSeq) return;
     console.error('Users load error:', error);
@@ -572,15 +862,34 @@ async function loadUsers() {
   }
 }
 
-function renderUsersTable(users, emptyMessage) {
-  const tbody = document.getElementById('usersTableBody');
-  
-  if (users.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">${escapeHtml(emptyMessage || 'No users registered')}</td></tr>`;
+function renderCurrentUsersView() {
+  const searchEl = $('userSearch');
+  const query = searchEl ? searchEl.value.toLowerCase().trim() : '';
+  if (!query) {
+    renderUsersTable(usersData);
     return;
   }
-  
-  tbody.innerHTML = users.map(user => `
+  renderUsersTable(filterUserRows(usersData, query), 'No matching users');
+}
+
+function filterUserRows(users, query) {
+  return users.filter(user =>
+    user.name.toLowerCase().includes(query) ||
+    user.user_id.toLowerCase().includes(query) ||
+    user.rfid_uid.toLowerCase().includes(query) ||
+    user.department.toLowerCase().includes(query)
+  );
+}
+
+function renderUsersTable(users, emptyMessage) {
+  const tbody = $('usersTableBody');
+
+  if (users.length === 0) {
+    setHTML(tbody, `<tr><td colspan="8" class="empty-cell">${escapeHtml(emptyMessage || 'No users registered')}</td></tr>`);
+    return;
+  }
+
+  setHTML(tbody, users.map(user => `
     <tr>
       <td><strong>${escapeHtml(user.name)}</strong></td>
       <td>${escapeHtml(user.user_id)}</td>
@@ -591,15 +900,15 @@ function renderUsersTable(users, emptyMessage) {
       <td><span class="badge badge-${slug(user.current_status)}">${escapeHtml(user.current_status)}</span></td>
       <td>
         <div style="display:flex;gap:4px;">
-          <button class="btn-icon" onclick="editUser('${escapeAttrJs(user.rfid_uid)}')" title="Edit">
+          <button type="button" class="btn-icon" data-user-action="edit" data-rfid="${escapeHtml(user.rfid_uid)}" title="Edit">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path>
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path>
             </svg>
           </button>
-          <button class="btn-icon" onclick="toggleUserStatus('${escapeAttrJs(user.rfid_uid)}', '${escapeAttrJs(user.status)}')" title="${user.status === 'Active' ? 'Deactivate' : 'Activate'}">
+          <button type="button" class="btn-icon" data-user-action="toggle" data-rfid="${escapeHtml(user.rfid_uid)}" data-status="${escapeHtml(user.status)}" title="${user.status === 'Active' ? 'Deactivate' : 'Activate'}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              ${user.status === 'Active' ? 
+              ${user.status === 'Active' ?
                 '<path d="M18.36 6.64a9 9 0 11-12.73 0M12 2v10"></path>' :
                 '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline>'
               }
@@ -608,27 +917,20 @@ function renderUsersTable(users, emptyMessage) {
         </div>
       </td>
     </tr>
-  `).join('');
+  `).join(''));
 }
 
 function filterUsers() {
-  const query = document.getElementById('userSearch').value.toLowerCase();
-  const filtered = usersData.filter(user => 
-    user.name.toLowerCase().includes(query) ||
-    user.user_id.toLowerCase().includes(query) ||
-    user.rfid_uid.toLowerCase().includes(query) ||
-    user.department.toLowerCase().includes(query)
-  );
-  renderUsersTable(filtered, 'No matching users');
+  renderCurrentUsersView();
 }
 
 // ==================== USERS TAB NAVIGATION ====================
 function switchUsersTab(tab) {
   activeUsersTab = tab;
-  const tabRegistered = document.getElementById('tabRegisteredUsers');
-  const tabRegister = document.getElementById('tabRegisterUser');
-  const panelRegistered = document.getElementById('usersPanelRegistered');
-  const panelRegister = document.getElementById('usersPanelRegister');
+  const tabRegistered = $('tabRegisteredUsers');
+  const tabRegister = $('tabRegisterUser');
+  const panelRegistered = $('usersPanelRegistered');
+  const panelRegister = $('usersPanelRegister');
 
   if (tab === 'registered') {
     tabRegistered.classList.add('active');
@@ -646,18 +948,18 @@ function switchUsersTab(tab) {
 
 // Auto-refresh for the Users page: refresh ONLY the registered-users list.
 // Never touches the registration form, so typed values and a scanned RFID UID survive.
-function refreshUsersTab() {
+function refreshUsersTab(isRefreshTick) {
   if (activeUsersTab === 'registered') {
-    loadUsers();
+    return loadUsers({ minAge: isRefreshTick ? USERS_REFRESH_TTL_MS : NAV_CACHE_TTL_MS });
   }
 }
 
 function resetRegisterForm() {
-  document.getElementById('registerUserForm').reset();
-  document.getElementById('regUserRFID').value = '';
-  document.getElementById('rfidScanStatus').style.display = 'none';
-  document.getElementById('btnReadRFID').disabled = false;
-  document.getElementById('btnRegisterUser').disabled = true;
+  $('registerUserForm').reset();
+  $('regUserRFID').value = '';
+  $('rfidScanStatus').style.display = 'none';
+  $('btnReadRFID').disabled = false;
+  $('btnRegisterUser').disabled = true;
   registrationUID = '';
 }
 
@@ -665,21 +967,21 @@ function resetRegisterForm() {
 let rfidPollTimer = null;
 
 async function startRFIDScan() {
-  const btn = document.getElementById('btnReadRFID');
-  const statusEl = document.getElementById('rfidScanStatus');
-  const rfidField = document.getElementById('regUserRFID');
-  
+  const btn = $('btnReadRFID');
+  const statusEl = $('rfidScanStatus');
+  const rfidField = $('regUserRFID');
+
   btn.disabled = true;
   btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg> SCANNING...';
-  
+
   statusEl.textContent = 'Waiting for RFID card... Place the RFID card near the reader.';
   statusEl.className = 'rfid-scan-status waiting';
   statusEl.style.display = 'block';
-  
+
   rfidField.value = '';
   registrationUID = '';
-  document.getElementById('btnRegisterUser').disabled = true;
-  
+  $('btnRegisterUser').disabled = true;
+
   try {
     // Apps Script occasionally answers HTTP 200 with success:false while it is
     // under load. Retry the start so one transient backend error does not
@@ -688,9 +990,9 @@ async function startRFIDScan() {
     for (let attempt = 1; attempt <= 3; attempt++) {
       response = await apiCall('start_rfid_registration', {});
       if (response.success) break;
-      if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      if (attempt < 3) await sleep(1000 * attempt);
     }
-    
+
     if (response.success) {
       const startRequestId = response.data && response.data.request_id
         ? response.data.request_id
@@ -707,20 +1009,20 @@ async function startRFIDScan() {
 
 function pollRFIDResult(requestId) {
   if (rfidPollTimer) clearTimeout(rfidPollTimer);
-  
+
   let attempts = 0;
   const maxAttempts = 30;
   const deadline = Date.now() + 60000;
   let consecutiveErrors = 0;
-  
+
   const poll = async () => {
     attempts++;
-    
+
     if (attempts > maxAttempts || Date.now() >= deadline) {
       showRFIDError('RFID scan timed out. Please try again.');
       return;
     }
-    
+
     try {
       const response = await apiGet(
         'get_rfid_registration_status',
@@ -728,7 +1030,7 @@ function pollRFIDResult(requestId) {
       );
       consecutiveErrors = 0;
       console.log('[REGISTRATION] poll:', JSON.stringify(response.data || response));
-      
+
       if (response.success && response.data) {
         if (response.data.status === 'DETECTED' && response.data.rfid_uid) {
           handleRFIDDetected(response.data.rfid_uid);
@@ -747,40 +1049,40 @@ function pollRFIDResult(requestId) {
         return;
       }
     }
-    
+
     rfidPollTimer = setTimeout(poll, 1000);
   };
-  
+
   poll();
 }
 
 function handleRFIDDetected(uid) {
-  const btn = document.getElementById('btnReadRFID');
-  const statusEl = document.getElementById('rfidScanStatus');
-  const rfidField = document.getElementById('regUserRFID');
+  const btn = $('btnReadRFID');
+  const statusEl = $('rfidScanStatus');
+  const rfidField = $('regUserRFID');
 
   uid = (uid || '').trim();
   if (!uid) return;
 
   registrationUID = uid;
   rfidField.value = uid;
-  
+
   statusEl.textContent = 'RFID detected successfully';
   statusEl.className = 'rfid-scan-status success';
-  
+
   btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg> RFID SCANNED';
   btn.disabled = false;
-  
-  document.getElementById('btnRegisterUser').disabled = false;
+
+  $('btnRegisterUser').disabled = false;
 }
 
 function showRFIDError(message) {
-  const btn = document.getElementById('btnReadRFID');
-  const statusEl = document.getElementById('rfidScanStatus');
-  
+  const btn = $('btnReadRFID');
+  const statusEl = $('rfidScanStatus');
+
   statusEl.textContent = message;
   statusEl.className = 'rfid-scan-status error';
-  
+
   btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg> READ RFID';
   btn.disabled = false;
 }
@@ -788,33 +1090,33 @@ function showRFIDError(message) {
 // ==================== REGISTER USER ====================
 async function submitRegisterUser(e) {
   e.preventDefault();
-  
-  const name = document.getElementById('regUserName').value.trim();
-  const userId = document.getElementById('regUserUserId').value.trim();
-  const department = document.getElementById('regUserDept').value.trim();
-  const userType = document.getElementById('regUserType').value;
+
+  const name = $('regUserName').value.trim();
+  const userId = $('regUserUserId').value.trim();
+  const department = $('regUserDept').value.trim();
+  const userType = $('regUserType').value;
   const rfidUid = registrationUID;
-  
+
   if (!name) {
     showToast('Please enter a name', 'error');
     return;
   }
-  
+
   if (!userId) {
     showToast('Please enter a User ID', 'error');
     return;
   }
-  
+
   if (!rfidUid) {
     showToast('Please scan an RFID card first', 'error');
     return;
   }
-  
+
   if (!department) {
     showToast('Please enter a department', 'error');
     return;
   }
-  
+
   const userData = {
     rfid_uid: rfidUid,
     name: name,
@@ -822,13 +1124,30 @@ async function submitRegisterUser(e) {
     department: department,
     user_type: userType
   };
-  
+
   try {
     // The backend de-duplicates RFID cards only, so a duplicate User ID would
-    // silently create a second account with the same identity. Check first.
-    const usersResponse = await apiGet('get_users');
-    if (usersResponse && usersResponse.success && Array.isArray(usersResponse.data.users)) {
-      const existingUsers = usersResponse.data.users;
+    // silently create a second account with the same identity. Check first:
+    // a recently loaded full user list answers this without a network round
+    // trip, otherwise the list is fetched as before.
+    let existingUsers = null;
+    const duplicateCacheFresh = usersLoaded && usersData.length > 0 &&
+      (Date.now() - usersLoadedAt) < USERS_DUPLICATE_TTL_MS;
+
+    if (duplicateCacheFresh) {
+      existingUsers = usersData;
+    } else {
+      const usersResponse = await apiGet('get_users');
+      if (usersResponse && usersResponse.success && Array.isArray(usersResponse.data.users)) {
+        existingUsers = usersResponse.data.users;
+        usersData = existingUsers;
+        usersLoaded = true;
+        usersLoadedAt = Date.now();
+        cacheWrite('users', usersData);
+      }
+    }
+
+    if (existingUsers) {
       const duplicateUserId = existingUsers.find(
         u => String(u.user_id || '').toLowerCase() === userId.toLowerCase()
       );
@@ -848,8 +1167,22 @@ async function submitRegisterUser(e) {
     const response = await apiCall('register_user', userData);
     if (response.success) {
       showToast('User registered successfully', 'success');
+      // Update the local list immediately, then confirm with the backend.
+      usersData = usersData.concat([{
+        rfid_uid: rfidUid,
+        name: name,
+        user_id: userId,
+        department: department,
+        user_type: userType,
+        status: 'Active',
+        current_status: 'OUTSIDE'
+      }]);
+      usersLoaded = true;
+      usersLoadedAt = Date.now();
+      cacheWrite('users', usersData);
       resetRegisterForm();
       switchUsersTab('registered');
+      loadUsers({ force: true });
     } else {
       if (response.session_expired) return;
       showToast(response.message || 'Registration failed', 'error');
@@ -860,38 +1193,51 @@ async function submitRegisterUser(e) {
 }
 
 // ==================== CURRENTLY INSIDE ====================
-async function loadCurrentInside() {
+async function loadCurrentInside(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  const cacheKey = 'inside';
+  const cached = cacheRead(cacheKey);
+
+  if (cached) {
+    currentInsideData = cached.value.users;
+    setText('insideCount', String(cached.value.count || 0));
+    renderInsideTable(currentInsideData);
+  }
+  if (!options.force && cached && (Date.now() - cached.ts) < minAge) return;
+
   const seq = ++insideSeq;
   try {
     const response = await apiGet('get_current_inside');
     if (seq !== insideSeq) return;
 
     if (!response.success) {
-      document.getElementById('insideCount').textContent = '--';
+      setText('insideCount', '--');
       setTableMessage('insideTableBody', 'Could not load data: ' + (response.message || 'unknown error'), 6);
       return;
     }
 
     currentInsideData = response.data.users || [];
-    document.getElementById('insideCount').textContent = response.data.count || 0;
+    const payload = { count: response.data.count || 0, users: currentInsideData };
+    cacheWrite(cacheKey, payload);
+    setText('insideCount', String(response.data.count || 0));
     renderInsideTable(currentInsideData);
   } catch (error) {
     if (seq !== insideSeq) return;
     console.error('Inside load error:', error);
-    document.getElementById('insideCount').textContent = '--';
+    setText('insideCount', '--');
     setTableMessage('insideTableBody', 'Could not reach the backend to load data. Retrying…', 6);
   }
 }
 
 function renderInsideTable(users) {
-  const tbody = document.getElementById('insideTableBody');
-  
+  const tbody = $('insideTableBody');
+
   if (users.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-cell">No users currently inside</td></tr>';
+    setHTML(tbody, '<tr><td colspan="6" class="empty-cell">No users currently inside</td></tr>');
     return;
   }
-  
-  tbody.innerHTML = users.map(user => `
+
+  setHTML(tbody, users.map(user => `
     <tr>
       <td><strong>${escapeHtml(user.name)}</strong></td>
       <td>${escapeHtml(user.user_id)}</td>
@@ -900,34 +1246,66 @@ function renderInsideTable(users) {
       <td>${escapeHtml(user.duration)}</td>
       <td><span class="badge badge-inside">INSIDE</span></td>
     </tr>
-  `).join('');
+  `).join(''));
 }
 
 // ==================== HISTORY ====================
 // Debounced so typing in a filter box does not fire one request per keystroke.
 function scheduleHistoryLoad() {
+  previewHistoryLocally();
   if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
-  historyDebounceTimer = setTimeout(loadHistory, FILTER_DEBOUNCE_MS);
+  historyDebounceTimer = setTimeout(() => loadHistory(), FILTER_DEBOUNCE_MS);
 }
 
-async function loadHistory() {
-  const seq = ++historySeq;
+// Instant feedback while the debounced authoritative request is on its way.
+// Only narrows the rows already on screen, and never paints an empty result
+// the backend has not confirmed yet.
+function previewHistoryLocally() {
+  if (!historyData || historyData.length === 0) return;
+  const params = readHistoryFilters();
+  if (params.filter_date) return;
+  const rows = filterHistoryRows(historyData, params);
+  if (rows.length > 0) renderHistoryTable(rows);
+}
+
+function filterHistoryRows(records, params) {
+  const name = (params.filter_name || '').toLowerCase();
+  const rfid = (params.filter_rfid || '').toLowerCase();
+  const action = (params.filter_action || '').toUpperCase();
+  return records.filter(record =>
+    (!name || String(record.name).toLowerCase().includes(name)) &&
+    (!rfid || String(record.rfid_uid).toLowerCase().includes(rfid)) &&
+    (!action || String(record.action).toUpperCase() === action)
+  );
+}
+
+function readHistoryFilters() {
   const params = {};
-  
-  const date = document.getElementById('historyDate').value;
+  const date = $('historyDate').value;
   if (date) params.filter_date = date;
-  
-  const name = document.getElementById('historyName').value;
+  const name = $('historyName').value;
   if (name) params.filter_name = name;
-  
-  const rfid = document.getElementById('historyRFID').value;
+  const rfid = $('historyRFID').value;
   if (rfid) params.filter_rfid = rfid;
-  
-  const action = document.getElementById('historyAction').value;
+  const action = $('historyAction').value;
   if (action) params.filter_action = action;
-  
   params.limit = 100;
-  
+  return params;
+}
+
+async function loadHistory(options = {}) {
+  const minAge = options.minAge === undefined ? NAV_CACHE_TTL_MS : options.minAge;
+  const params = readHistoryFilters();
+  const cacheKey = `history|${JSON.stringify(params)}`;
+  const cached = cacheRead(cacheKey);
+
+  if (cached) {
+    historyData = cached.value;
+    renderHistoryTable(historyData);
+  }
+  if (!options.force && cached && (Date.now() - cached.ts) < minAge) return;
+
+  const seq = ++historySeq;
   try {
     const response = await apiGet('get_history', params);
     if (seq !== historySeq) return;
@@ -938,6 +1316,7 @@ async function loadHistory() {
     }
 
     historyData = response.data.history || [];
+    cacheWrite(cacheKey, historyData);
     renderHistoryTable(historyData);
   } catch (error) {
     if (seq !== historySeq) return;
@@ -947,14 +1326,14 @@ async function loadHistory() {
 }
 
 function renderHistoryTable(records) {
-  const tbody = document.getElementById('historyTableBody');
-  
+  const tbody = $('historyTableBody');
+
   if (records.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-cell">No records found</td></tr>';
+    setHTML(tbody, '<tr><td colspan="7" class="empty-cell">No records found</td></tr>');
     return;
   }
-  
-  tbody.innerHTML = records.map(record => `
+
+  setHTML(tbody, records.map(record => `
     <tr>
       <td>${escapeHtml(record.date)}</td>
       <td>${escapeHtml(record.time)}</td>
@@ -964,7 +1343,7 @@ function renderHistoryTable(records) {
       <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
       <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
     </tr>
-  `).join('');
+  `).join(''));
 }
 
 // ==================== REPORTS ====================
@@ -979,8 +1358,8 @@ function isoDateLocal(date) {
 // immediately instead of an empty table until the user picks dates.
 function ensureReportDateRange() {
   if (reportRangeInitialised) return;
-  const fromEl = document.getElementById('reportFrom');
-  const toEl = document.getElementById('reportTo');
+  const fromEl = $('reportFrom');
+  const toEl = $('reportTo');
   if (!fromEl || !toEl) return;
   if (fromEl.value && toEl.value) return;
   const today = new Date();
@@ -989,16 +1368,32 @@ function ensureReportDateRange() {
   reportRangeInitialised = true;
 }
 
-async function loadReport() {
-  const seq = ++reportSeq;
-  const fromDate = document.getElementById('reportFrom').value;
-  const toDate = document.getElementById('reportTo').value;
-  
+function renderReportData(data) {
+  setText('reportEntries', String(data.total_entries || 0));
+  setText('reportExits', String(data.total_exits || 0));
+  setText('reportVisits', String(data.total_visits || 0));
+  setText('reportInside', String(data.currently_inside || 0));
+
+  reportData = data.data || [];
+  renderReportTable(reportData);
+}
+
+async function loadReport(options = {}) {
+  const minAge = options.minAge === undefined ? REPORT_CACHE_TTL_MS : options.minAge;
+  const fromDate = $('reportFrom').value;
+  const toDate = $('reportTo').value;
+
   if (!fromDate || !toDate) {
     setTableMessage('reportTableBody', 'Select date range to generate report', 9);
     return;
   }
 
+  const cacheKey = `report|${fromDate}|${toDate}`;
+  const cached = cacheRead(cacheKey);
+  if (cached) renderReportData(cached.value);
+  if (!options.force && cached && (Date.now() - cached.ts) < minAge) return;
+
+  const seq = ++reportSeq;
   try {
     const response = await apiGet('get_reports', { from_date: fromDate, to_date: toDate });
     if (seq !== reportSeq) return;
@@ -1009,13 +1404,8 @@ async function loadReport() {
     }
 
     const data = response.data;
-    document.getElementById('reportEntries').textContent = data.total_entries || 0;
-    document.getElementById('reportExits').textContent = data.total_exits || 0;
-    document.getElementById('reportVisits').textContent = data.total_visits || 0;
-    document.getElementById('reportInside').textContent = data.currently_inside || 0;
-    
-    reportData = data.data || [];
-    renderReportTable(reportData);
+    cacheWrite(cacheKey, data);
+    renderReportData(data);
   } catch (error) {
     if (seq !== reportSeq) return;
     console.error('Report load error:', error);
@@ -1024,14 +1414,14 @@ async function loadReport() {
 }
 
 function renderReportTable(records) {
-  const tbody = document.getElementById('reportTableBody');
-  
+  const tbody = $('reportTableBody');
+
   if (records.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty-cell">No data for selected date range</td></tr>';
+    setHTML(tbody, '<tr><td colspan="9" class="empty-cell">No data for selected date range</td></tr>');
     return;
   }
-  
-  tbody.innerHTML = records.map(record => `
+
+  setHTML(tbody, records.map(record => `
     <tr>
       <td>${escapeHtml(record.sno)}</td>
       <td>${escapeHtml(record.date)}</td>
@@ -1043,19 +1433,19 @@ function renderReportTable(records) {
       <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
       <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
     </tr>
-  `).join('');
+  `).join(''));
 }
 
 // ==================== EXCEL EXPORT ====================
 async function exportExcel() {
-  const fromDate = document.getElementById('reportFrom').value;
-  const toDate = document.getElementById('reportTo').value;
-  
+  const fromDate = $('reportFrom').value;
+  const toDate = $('reportTo').value;
+
   if (!fromDate || !toDate) {
     showToast('Please select date range first', 'error');
     return;
   }
-  
+
   try {
     const response = await apiCall('export_excel', { from_date: fromDate, to_date: toDate });
     if (response.session_expired) return;
@@ -1063,7 +1453,7 @@ async function exportExcel() {
       showToast('No data to export', 'error');
       return;
     }
-    
+
     generateExcelFile(response.data.data, fromDate, toDate);
     showToast('Excel file downloaded', 'success');
   } catch (error) {
@@ -1073,9 +1463,9 @@ async function exportExcel() {
 
 function generateExcelFile(data, fromDate, toDate) {
   const headers = ['S.No', 'Date', 'RFID UID', 'Name', 'User ID', 'Department', 'User Type', 'Action', 'Status'];
-  
+
   let csv = headers.join(',') + '\n';
-  
+
   data.forEach(row => {
     csv += [
       row.sno,
@@ -1089,7 +1479,7 @@ function generateExcelFile(data, fromDate, toDate) {
       row.status
     ].join(',') + '\n';
   });
-  
+
   const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -1103,13 +1493,13 @@ function generateExcelFile(data, fromDate, toDate) {
 function editUser(rfidUid) {
   const user = usersData.find(u => u.rfid_uid === rfidUid);
   if (!user) return;
-  
+
   const newName = prompt('Enter new name:', user.name);
   if (newName === null) return;
-  
+
   const newDept = prompt('Enter new department:', user.department);
   if (newDept === null) return;
-  
+
   apiCall('update_user', {
     rfid_uid: rfidUid,
     name: newName,
@@ -1117,7 +1507,7 @@ function editUser(rfidUid) {
   }).then(response => {
     if (response.success) {
       showToast('User updated successfully', 'success');
-      loadUsers();
+      applyLocalUserUpdate(rfidUid, { name: newName, department: newDept });
     } else if (response.session_expired) {
       return;
     } else {
@@ -1129,18 +1519,18 @@ function editUser(rfidUid) {
 async function toggleUserStatus(rfidUid, currentStatus) {
   const newStatus = currentStatus === 'Active' ? 'Inactive' : 'Active';
   const action = newStatus === 'Inactive' ? 'deactivate' : 'reactivate';
-  
+
   if (!confirm(`Are you sure you want to ${action} this user?`)) return;
-  
+
   try {
     const response = await apiCall('update_user', {
       rfid_uid: rfidUid,
       status: newStatus
     });
-    
+
     if (response.success) {
       showToast(`User ${action}d successfully`, 'success');
-      loadUsers();
+      applyLocalUserUpdate(rfidUid, { status: newStatus });
     } else if (response.session_expired) {
       return;
     } else {
@@ -1151,56 +1541,53 @@ async function toggleUserStatus(rfidUid, currentStatus) {
   }
 }
 
+// Update the visible row at once, then reconcile with the backend so the
+// table never shows an optimistic value that the server rejected.
+function applyLocalUserUpdate(rfidUid, changes) {
+  const user = usersData.find(u => u.rfid_uid === rfidUid);
+  if (user) Object.assign(user, changes);
+  if (user) cacheWrite('users', usersData);
+  renderCurrentUsersView();
+  loadUsers({ force: true });
+}
+
 // ==================== TOAST ====================
 function showToast(message, type = 'info') {
-  const toast = document.getElementById('toast');
-  const toastMsg = document.getElementById('toastMessage');
-  
+  const toast = $('toast');
+  const toastMsg = $('toastMessage');
+
   toastMsg.textContent = message;
   toast.className = `toast ${type}`;
   toast.style.display = 'block';
-  
+
   setTimeout(() => {
     toast.style.display = 'none';
   }, 3000);
 }
 
-// ==================== UTILITIES ====================
-function formatTime(timestamp) {
-  if (!timestamp) return '--';
-  const parts = timestamp.split(' ');
-  if (parts.length >= 2) {
-    return parts[1];
+// ==================== DASHBOARD CACHE ====================
+// Last successful statistics for an instant paint after a reload. Never used
+// for status: ESP32 / internet / sheets states always come from live sources.
+const DASHBOARD_CACHE_KEY = 'innosecure_dashboard_cache';
+
+function readDashboardCache() {
+  try {
+    const raw = sessionStorage.getItem(DASHBOARD_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.ts || (Date.now() - parsed.ts) > DASHBOARD_CACHE_TTL_MS) return null;
+    return parsed.data && typeof parsed.data === 'object' ? parsed.data : null;
+  } catch (error) {
+    return null;
   }
-  return timestamp;
 }
 
-function escapeHtml(str) {
-  if (str === null || str === undefined) return '';
-  const div = document.createElement('div');
-  div.textContent = String(str);
-  return div.innerHTML;
-}
-
-// Escapes a value that is placed inside a single-quoted JavaScript string in
-// an HTML attribute (e.g. onclick="editUser('...')"). The HTML attribute is
-// decoded before the JS runs, so the quote must be escaped for JS, not as an
-// HTML entity.
-function escapeAttrJs(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'");
-}
-
-// Safe CSS class fragment for a value that comes from the backend/sheet.
-function slug(value) {
-  if (value === null || value === undefined) return '';
-  return String(value).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+function writeDashboardCache(data) {
+  try {
+    sessionStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: data }));
+  } catch (error) {
+    // Storage full or blocked: the live fetch is the source of truth anyway.
+  }
 }
 
 // ==================== DEMO DATA ====================
@@ -1212,7 +1599,7 @@ function getDemoData(action, params) {
     { rfid_uid: 'D60E2455', name: 'Amit Singh', user_id: 'A866051243', department: 'ME', user_type: 'Staff', status: 'Active', registration_date: '2024-01-18 12:00:00', current_status: 'OUTSIDE' },
     { rfid_uid: 'E71F3566', name: 'Sneha Reddy', user_id: 'A866051244', department: 'CSE', user_type: 'Student', status: 'Active', registration_date: '2024-01-19 13:00:00', current_status: 'INSIDE' }
   ];
-  
+
   const demoHistory = [
     { timestamp: '2024-01-20 09:15:00', date: '2024-01-20', time: '09:15:00', rfid_uid: 'A37B9122', name: 'Pavan Kumar', user_id: 'A866051240', action: 'ENTRY', status: 'AUTHORIZED' },
     { timestamp: '2024-01-20 09:30:00', date: '2024-01-20', time: '09:30:00', rfid_uid: 'C59D1344', name: 'Priya Patel', user_id: 'A866051242', action: 'ENTRY', status: 'AUTHORIZED' },
@@ -1220,11 +1607,11 @@ function getDemoData(action, params) {
     { timestamp: '2024-01-20 10:30:00', date: '2024-01-20', time: '10:30:00', rfid_uid: 'F82G4677', name: 'Unknown', user_id: 'N/A', action: 'UNKNOWN', status: 'UNKNOWN RFID' },
     { timestamp: '2024-01-20 11:00:00', date: '2024-01-20', time: '11:00:00', rfid_uid: 'B48C0233', name: 'Rahul Sharma', user_id: 'A866051241', action: 'ENTRY', status: 'AUTHORIZED' }
   ];
-  
+
   switch (action) {
     case 'login':
       return { success: true, message: 'Login successful', data: { token: 'demo_token', username: params.username, role: 'admin' } };
-    
+
     case 'get_dashboard_data':
       return {
         success: true,
@@ -1238,10 +1625,10 @@ function getDemoData(action, params) {
           system_status: { esp32: 'ONLINE', rfid: 'READY', internet: 'CONNECTED', google_sheets: 'SYNCED' }
         }
       };
-    
+
     case 'get_users':
       return { success: true, data: { users: demoUsers } };
-    
+
     case 'get_current_inside':
       return {
         success: true,
@@ -1254,10 +1641,10 @@ function getDemoData(action, params) {
           }))
         }
       };
-    
+
     case 'get_history':
       return { success: true, data: { history: demoHistory } };
-    
+
     case 'get_reports':
       return {
         success: true,
@@ -1271,25 +1658,25 @@ function getDemoData(action, params) {
           data: demoHistory.map((h, i) => ({ ...h, sno: i + 1, department: 'CSE', user_type: 'Student' }))
         }
       };
-    
+
     case 'register_user':
       return { success: true, message: 'User registered', data: { rfid_uid: params.rfid_uid, name: params.name } };
-    
+
     case 'update_user':
       return { success: true, message: 'User updated' };
-    
+
     case 'enter_registration_mode':
       return { success: true, data: { mode: 'registration' } };
-    
+
     case 'start_rfid_registration':
       return { success: true, data: { status: 'WAITING', message: 'Waiting for RFID card...' } };
-    
+
     case 'get_rfid_registration_status':
       return { success: true, data: { status: 'IDLE', rfid_uid: '' } };
-    
+
     case 'rfid_registration_result':
       return { success: true, message: 'RFID scanned', data: { rfid_uid: params.rfid_uid } };
-    
+
     case 'export_excel':
       return {
         success: true,
@@ -1297,7 +1684,7 @@ function getDemoData(action, params) {
           data: demoHistory.map((h, i) => ({ ...h, sno: i + 1, department: 'CSE', user_type: 'Student' }))
         }
       };
-    
+
     default:
       return { success: true, data: {} };
   }

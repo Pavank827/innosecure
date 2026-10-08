@@ -7,7 +7,11 @@
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://script.google.com">
+  <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+  <link rel="preconnect" href="https://makerspace-rfid-edge-api.makerspace-rfid-edge-api.workers.dev">
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"></noscript>
 </head>
 <body>
 
@@ -223,7 +227,7 @@
             </div>
             <div class="stat-info">
               <span class="stat-label">Registered Users</span>
-              <span class="stat-value" id="statRegistered">--</span>
+              <span class="stat-value loading" id="statRegistered">--</span>
             </div>
           </div>
           <div class="stat-card">
@@ -236,7 +240,7 @@
             </div>
             <div class="stat-info">
               <span class="stat-label">Currently Inside</span>
-              <span class="stat-value" id="statInside">--</span>
+              <span class="stat-value loading" id="statInside">--</span>
             </div>
           </div>
           <div class="stat-card">
@@ -248,7 +252,7 @@
             </div>
             <div class="stat-info">
               <span class="stat-label">Today's Entries</span>
-              <span class="stat-value" id="statEntries">--</span>
+              <span class="stat-value loading" id="statEntries">--</span>
             </div>
           </div>
           <div class="stat-card">
@@ -260,7 +264,7 @@
             </div>
             <div class="stat-info">
               <span class="stat-label">Today's Exits</span>
-              <span class="stat-value" id="statExits">--</span>
+              <span class="stat-value loading" id="statExits">--</span>
             </div>
           </div>
         </div>
@@ -304,25 +308,25 @@
               <div class="status-list">
                 <div class="status-item">
                   <span class="status-label">ESP32</span>
-                  <span class="status-value" id="statusESP32">
+                  <span class="status-value loading" id="statusESP32">
                     <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">RFID Reader</span>
-                  <span class="status-value" id="statusRFID">
+                  <span class="status-value loading" id="statusRFID">
                     <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">Internet</span>
-                  <span class="status-value" id="statusInternet">
+                  <span class="status-value loading" id="statusInternet">
                     <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
                 <div class="status-item">
                   <span class="status-label">Google Sheets</span>
-                  <span class="status-value" id="statusSheets">
+                  <span class="status-value loading" id="statusSheets">
                     <span class="status-dot warning"></span> CHECKING
                   </span>
                 </div>
@@ -713,6 +717,6 @@
     <span id="toastMessage"></span>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js" defer></script>
 </body>
 </html>

@@ -1,0 +1,192 @@
+{
+  "label": "after",
+  "startedAt": "2026-10-08T12:02:59.661Z",
+  "scenario": {
+    "initialLoad": {
+      "ttfb": 5.6000000005587935,
+      "dcl": 96.5,
+      "load": 99,
+      "fcp": 104,
+      "loginVisible": true,
+      "appHidden": true,
+      "wallMs": 520,
+      "requests": []
+    },
+    "dashboard": {
+      "appVisibleAt": 132.20000000018626,
+      "shellAt": 134.20000000018626,
+      "statsAt": 1040.5999999996275,
+      "deviceStatusAt": 1042.2999999998137,
+      "headerAt": 1043.7999999998137,
+      "requests": [
+        "other:index.html",
+        "other:styles.css",
+        "font:font-css",
+        "other:app.js",
+        "gas:get_dashboard_data",
+        "edge:device_status",
+        "font:font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+        "font:font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+        "font:font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+        "font:font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2"
+      ],
+      "wallMs": 1362
+    },
+    "pageSwitch": {
+      "users": {
+        "syncMs": 0.8999999994412065,
+        "dataMs": 19.799999999813735,
+        "requests": []
+      },
+      "usersRegisteredTab": {
+        "syncMs": 0.5,
+        "dataMs": 923.2999999998137,
+        "requests": [
+          "gas:get_users"
+        ]
+      },
+      "inside": {
+        "syncMs": 0.39999999944120646,
+        "dataMs": 927,
+        "requests": [
+          "gas:get_current_inside"
+        ]
+      },
+      "history": {
+        "syncMs": 0.599999999627471,
+        "dataMs": 923.2999999998137,
+        "requests": [
+          "gas:get_history"
+        ]
+      },
+      "reports": {
+        "syncMs": 0.6000000005587935,
+        "dataMs": 920.6000000005588,
+        "requests": [
+          "gas:get_reports"
+        ]
+      },
+      "dashboard": {
+        "syncMs": 0.19999999925494194,
+        "dataMs": 2.199999999254942,
+        "requests": [
+          "edge:device_status"
+        ]
+      }
+    },
+    "users": {
+      "rows": 12,
+      "retoggleRequests": 0
+    },
+    "history": {
+      "keystrokes": 4,
+      "uiUpdateMs": 1.7000000001862645,
+      "requests": [
+        "gas:get_history"
+      ]
+    },
+    "idle30sOnDashboard": {
+      "durationMs": 31013,
+      "ticks": 3,
+      "requests": [
+        "gas:get_dashboard_data",
+        "edge:device_status",
+        "gas:get_dashboard_data",
+        "edge:device_status",
+        "gas:get_dashboard_data",
+        "edge:device_status"
+      ],
+      "total": 6
+    },
+    "outage": {
+      "windowMs": 30004,
+      "errorShownAfterMs": 11703,
+      "gasRequests": 4,
+      "ui": {
+        "header": "Backend Unreachable",
+        "sheets": "ERROR",
+        "esp32": "ONLINE",
+        "stats": "--",
+        "interactive": true
+      }
+    },
+    "javascript": {
+      "mainThreadPageSwitchMs": 229,
+      "mainThreadSessionMs": 541,
+      "rawTaskBefore": 0.134876,
+      "rawTaskAfterSwitch": 0.364082,
+      "rawTaskEnd": 0.67596,
+      "render100RowsMs": 0.2,
+      "escapeHtml5kMs": 1.7,
+      "heapUsedBytes": 1371984
+    }
+  },
+  "requests": {
+    "other:index.html": 1,
+    "other:styles.css": 1,
+    "font:font-css": 1,
+    "other:app.js": 1,
+    "gas:get_dashboard_data": 9,
+    "edge:device_status": 9,
+    "font:font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2": 4,
+    "gas:get_users": 1,
+    "gas:get_current_inside": 1,
+    "gas:get_history": 2,
+    "gas:get_reports": 1
+  },
+  "requestsOutage": {
+    "gas:get_dashboard_data": 4,
+    "edge:device_status": 3
+  },
+  "maxConcurrent": {
+    "index.html": 1,
+    "styles.css": 1,
+    "font-css": 1,
+    "app.js": 1,
+    "get_dashboard_data": 1,
+    "device_status": 1,
+    "font-file:UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2": 4,
+    "get_users": 1,
+    "get_current_inside": 1,
+    "get_history": 1,
+    "get_reports": 1
+  },
+  "maxConcurrentOutage": {
+    "get_dashboard_data": 1,
+    "device_status": 1
+  },
+  "assets": {
+    "index.html": {
+      "bytes": 30960,
+      "gzip": 4747
+    },
+    "app.js": {
+      "bytes": 58753,
+      "gzip": 15292
+    },
+    "styles.css": {
+      "bytes": 20797,
+      "gzip": 4025
+    },
+    "404.html": {
+      "bytes": 1167,
+      "gzip": 695
+    }
+  },
+  "notes": {
+    "throttle": {
+      "latency": 15,
+      "downloadThroughput": 1250000,
+      "uploadThroughput": 500000,
+      "offline": false
+    },
+    "latency": {
+      "gasGet": 900,
+      "gasPost": 900,
+      "edge": 250,
+      "fontCss": 180,
+      "fontFile": 250
+    },
+    "backend": "mocked (deterministic), gzip static server, HTTP cache disabled"
+  }
+}

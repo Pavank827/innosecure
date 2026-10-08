@@ -476,6 +476,26 @@ body {
   display: inline-block;
 }
 
+/* Values that have not been answered yet: a quiet pulse instead of a frozen
+   placeholder, so "still loading" is visible without inventing a number. */
+.stat-value.loading,
+.status-value.loading {
+  animation: valuePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes valuePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-value.loading,
+  .status-value.loading {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 .status-dot.online {
   background: var(--success);
 }
