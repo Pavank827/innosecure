@@ -31,6 +31,10 @@ let activeUsersTab = 'register';
 let usersData = [];
 let currentInsideData = [];
 let historyData = [];
+// The exact rows currently rendered, so a delete button can address its
+// record without trusting a DOM index that filtering could shift.
+let renderedHistoryRows = [];
+let armedHistoryDelete = null;
 let reportData = [];
 let dashboardStatsSeq = 0;
 let deviceSeq = 0;
@@ -134,6 +138,7 @@ function setupEventListeners() {
   $('createAccountForm').addEventListener('submit', handleCreateAccount);
   // One delegated listener instead of an inline handler per table row.
   $('usersTableBody').addEventListener('click', handleUsersTableClick);
+  $('historyTableBody').addEventListener('click', handleHistoryTableClick);
   window.addEventListener('online', renderSystemStatus);
   window.addEventListener('offline', renderSystemStatus);
   document.addEventListener('visibilitychange', () => {
@@ -150,6 +155,65 @@ function handleUsersTableClick(event) {
     editUser(rfidUid);
   } else {
     toggleUserStatus(rfidUid, button.getAttribute('data-status'));
+  }
+}
+
+// Deletion is destructive, so the first click arms the button (inline, no
+// native dialog that would block headless tests) and the second confirms.
+// Any other click on the table re-arms from scratch.
+function handleHistoryTableClick(event) {
+  const button = event.target.closest('[data-hist-action]');
+  if (!button || !$('historyTableBody').contains(button)) return;
+  if (button.getAttribute('data-hist-action') !== 'delete') return;
+
+  const key = button.getAttribute('data-hist-key');
+  if (armedHistoryDelete !== key) {
+    armedHistoryDelete = key;
+    button.classList.add('confirm');
+    button.setAttribute('title', 'Click again to confirm deletion');
+    return;
+  }
+  armedHistoryDelete = null;
+  deleteHistoryRecord(Number(button.getAttribute('data-hist-idx')));
+}
+
+async function deleteHistoryRecord(index) {
+  const record = renderedHistoryRows[index];
+  if (!record) {
+    showToast('That history record is no longer on screen', 'error');
+    return;
+  }
+
+  try {
+    const response = await apiCall('delete_history_record', {
+      timestamp: record.timestamp,
+      date: record.date,
+      time: record.time,
+      rfid_uid: record.rfid_uid,
+      name: record.name,
+      user_id: record.user_id,
+      action: record.action,
+      status: record.status
+    });
+
+    if (!response || !response.success) {
+      showToast('Could not delete record: ' + ((response && response.message) || 'unknown error'), 'error');
+      // The table may be stale: reload the authoritative rows.
+      loadHistory({ force: true });
+      return;
+    }
+
+    const idx = historyData.indexOf(record);
+    if (idx >= 0) historyData.splice(idx, 1);
+    // Every cached history query could contain the removed row.
+    for (const key of [...responseCache.keys()]) {
+      if (key.startsWith('history|')) responseCache.delete(key);
+    }
+    renderHistoryTable(filterHistoryRows(historyData, readHistoryFilters()));
+    showToast('History record deleted', 'success');
+  } catch (error) {
+    console.error('History delete error:', error);
+    showToast('Could not reach the backend to delete the record', 'error');
   }
 }
 
@@ -720,6 +784,7 @@ function renderDashboardStats(data) {
   setText('statEntries', String(data.today_entries || 0));
   setText('statExits', String(data.today_exits || 0));
   ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(setLoadingDone);
+  renderOccupancyPie(data);
 
   const activityEl = $('latestActivity');
   if (data.latest_scan) {
@@ -758,11 +823,56 @@ function setLoadingDone(id) {
   setLoading(id, false);
 }
 
+// Occupancy donut: derived from the SAME get_dashboard_data payload the two
+// stat cards already show (currently_inside comes from Current_status), so
+// it costs no extra request and can never disagree with those numbers.
+// Outside is registered_users minus currently_inside; clamped at zero so a
+// momentarily inconsistent reply can never draw a negative slice.
+function renderOccupancyPie(data) {
+  const registered = Math.max(0, Number(data && data.registered_users) || 0);
+  const inside = Math.max(0, Number(data && data.currently_inside) || 0);
+
+  if (registered <= 0) {
+    setOccupancyPlaceholder();
+    return;
+  }
+
+  const insideClamped = Math.min(inside, registered);
+  const outside = registered - insideClamped;
+  const insidePct = (insideClamped / registered) * 100;
+  const outsidePct = 100 - insidePct;
+
+  // The donut is a 100-unit circumference ring. The outside arc is drawn as
+  // a full background ring and the inside arc is overlaid on top of it, so
+  // the two never overlap each other's slices.
+  setArcLength('pieInsideArc', insidePct);
+  setArcLength('pieOutsideArc', 100);
+  setText('pieInsideValue', String(insideClamped));
+  setText('pieOutsideValue', String(outside));
+  setText('pieSummary', `${Math.round(insidePct)}% inside / ${Math.round(outsidePct)}% outside`);
+}
+
+function setArcLength(id, pct) {
+  const el = $(id);
+  if (el) el.style.strokeDasharray = `${pct.toFixed(2)} ${(100 - pct).toFixed(2)}`;
+}
+
+// Honest empty state: no fabricated 0/0 split while the backend has not
+// answered (the stat cards show "--" in the same situation).
+function setOccupancyPlaceholder() {
+  setArcLength('pieInsideArc', 0);
+  setArcLength('pieOutsideArc', 0);
+  setText('pieInsideValue', '--');
+  setText('pieOutsideValue', '--');
+  setText('pieSummary', 'Waiting for data…');
+}
+
 function renderDashboardError(message) {
   ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(id => {
     setText(id, '--');
     setLoadingDone(id);
   });
+  setOccupancyPlaceholder();
   setHTML($('latestActivity'), `<div class="empty-state"><p>${escapeHtml(message)}</p></div>`);
 }
 
@@ -1311,7 +1421,7 @@ async function loadHistory(options = {}) {
     if (seq !== historySeq) return;
 
     if (!response.success) {
-      setTableMessage('historyTableBody', 'Could not load history: ' + (response.message || 'unknown error'), 7);
+      setTableMessage('historyTableBody', 'Could not load history: ' + (response.message || 'unknown error'), 8);
       return;
     }
 
@@ -1321,19 +1431,22 @@ async function loadHistory(options = {}) {
   } catch (error) {
     if (seq !== historySeq) return;
     console.error('History load error:', error);
-    setTableMessage('historyTableBody', 'Could not reach the backend to load history. Retrying…', 7);
+    setTableMessage('historyTableBody', 'Could not reach the backend to load history. Retrying…', 8);
   }
 }
 
 function renderHistoryTable(records) {
   const tbody = $('historyTableBody');
+  renderedHistoryRows = records;
+  // A re-render replaces every button, so any pending confirm dies with it.
+  armedHistoryDelete = null;
 
   if (records.length === 0) {
-    setHTML(tbody, '<tr><td colspan="7" class="empty-cell">No records found</td></tr>');
+    setHTML(tbody, '<tr><td colspan="8" class="empty-cell">No records found</td></tr>');
     return;
   }
 
-  setHTML(tbody, records.map(record => `
+  setHTML(tbody, records.map((record, idx) => `
     <tr>
       <td>${escapeHtml(record.date)}</td>
       <td>${escapeHtml(record.time)}</td>
@@ -1342,6 +1455,16 @@ function renderHistoryTable(records) {
       <td><code>${escapeHtml(record.rfid_uid)}</code></td>
       <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
       <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
+      <td class="actions-cell">
+        <button type="button" class="btn-icon danger" data-hist-action="delete" data-hist-idx="${idx}"
+          data-hist-key="${escapeHtml(record.timestamp + '|' + record.rfid_uid + '|' + record.action)}"
+          title="Delete this record">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path>
+          </svg>
+        </button>
+      </td>
     </tr>
   `).join(''));
 }

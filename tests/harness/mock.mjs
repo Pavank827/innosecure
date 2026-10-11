@@ -208,6 +208,25 @@ export function createMockBackend(options = {}) {
       }
       case 'update_user':
         return envelope(true, 'User updated');
+      case 'delete_history_record': {
+        // Mirrors PROTECTED_ACTIONS on the real backend: no session token,
+        // no deletion.
+        if (!params.auth_token) {
+          return envelope(false, 'Authentication required for delete_history_record');
+        }
+        const key = r => [r.timestamp, r.date, r.time, r.rfid_uid, r.name,
+          r.user_id, r.action, r.status].join('|');
+        const wanted = key({
+          timestamp: String(params.timestamp || ''), date: String(params.date || ''),
+          time: String(params.time || ''), rfid_uid: String(params.rfid_uid || ''),
+          name: String(params.name || ''), user_id: String(params.user_id || ''),
+          action: String(params.action || ''), status: String(params.status || '')
+        });
+        const idx = dataset.history.findIndex(r => key(r) === wanted);
+        if (idx === -1) return envelope(false, 'History record not found (it may have changed)');
+        dataset.history.splice(idx, 1);
+        return envelope(true, 'History record deleted');
+      }
       case 'start_rfid_registration':
         return envelope(true, 'Scan started', { request_id: 'req-1', status: 'WAITING' });
       case 'get_rfid_registration_status':

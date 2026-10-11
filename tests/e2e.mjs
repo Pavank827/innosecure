@@ -299,11 +299,16 @@ async function main() {
         const before = gas('get_dashboard_data');
         await sleep(30000);
         const used = gas('get_dashboard_data') - before;
-        const ui = await evaluate(cdp, `(() => ({
-          header: document.getElementById('systemStatusText').textContent,
-          sheets: document.getElementById('statusSheets').textContent.trim(),
-          stats: document.getElementById('statRegistered').textContent.trim()
-        }))()`);
+        // Each refresh tick paints the last known numbers while its attempt is
+        // still in flight (by design) and blanks them when the attempt fails.
+        // Wait for the settled error state instead of racing that window.
+        const ui = await waitFor(cdp, `(() => {
+          const stats = document.getElementById('statRegistered').textContent.trim();
+          const header = document.getElementById('systemStatusText').textContent;
+          const sheets = document.getElementById('statusSheets').textContent.trim();
+          return (header === 'Backend Unreachable' && sheets === 'ERROR' && stats === '--')
+            ? { header, sheets, stats } : 0;
+        })()`, { timeoutMs: 20000 });
         assertEq(ui.header, 'Backend Unreachable', 'header after 30 s of outage');
         assertEq(ui.sheets, 'ERROR', 'sheets status after 30 s of outage');
         assertEq(ui.stats, '--', 'statistics during the outage');
@@ -531,6 +536,107 @@ async function main() {
       await sleep(400);
       assertEq(gas('get_dashboard_data') - beforeGas, 1, 'concurrent dashboard loads must issue one statistics request');
       assertEq(edge() - beforeEdge, 1, 'concurrent dashboard loads must issue one heartbeat request');
+    });
+
+    // ---------------------------------------------------------------- T16b
+    await step('occupancy donut mirrors the dashboard payload with no extra request', async () => {
+      await evaluate(cdp, `navigateTo('dashboard'); true`);
+      await waitFor(cdp, `/^\\d+$/.test(document.getElementById('statInside').textContent.trim()) ? 1 : 0`,
+        { timeoutMs: 15000 });
+      // Give any (cache-miss) dashboard request triggered by the navigation
+      // time to land before the values are compared.
+      await sleep(700);
+      const before = gas('get_dashboard_data');
+      const ui = await evaluate(cdp, `(() => ({
+        inside: document.getElementById('statInside').textContent.trim(),
+        registered: document.getElementById('statRegistered').textContent.trim(),
+        pieInside: document.getElementById('pieInsideValue').textContent.trim(),
+        pieOutside: document.getElementById('pieOutsideValue').textContent.trim(),
+        summary: document.getElementById('pieSummary').textContent.trim(),
+        insideArc: document.getElementById('pieInsideArc').style.strokeDasharray
+      }))()`);
+      assertEq(ui.pieInside, ui.inside, 'pie "Inside" must equal the Currently Inside stat card');
+      assertEq(String(Number(ui.registered) - Number(ui.inside)), ui.pieOutside,
+        'pie "Outside" must be registered minus inside');
+      assert(/^\d+% inside \/ \d+% outside$/.test(ui.summary),
+        `pie summary must show percentages, got "${ui.summary}"`);
+      assert(/^[\d.]+[,\s]+[\d.]+$/.test(ui.insideArc),
+        `inside arc must be drawn, got "${ui.insideArc}"`);
+      // Re-rendering from the SAME payload the stat cards used must be free.
+      const repaint = gas('get_dashboard_data');
+      await evaluate(cdp, `renderOccupancyPie(lastDashboardData); true`);
+      await sleep(300);
+      assertEq(gas('get_dashboard_data') - repaint, 0, 're-rendering the chart must issue no request');
+      // The navigation above may revalidate once; the chart itself never does.
+      assert(gas('get_dashboard_data') - before <= 1,
+        'the chart must not add requests beyond the page navigation load');
+    });
+
+    // ---------------------------------------------------------------- T16c
+    await step('one history record can be deleted (auth, exact match, one row)', async () => {
+      await evaluate(cdp, `navigateTo('history'); true`);
+      await waitFor(cdp, `document.querySelectorAll('#historyTableBody tr').length > 0 &&
+        !/Loading history/.test(document.getElementById('historyTableBody').textContent) ? 1 : 0`,
+        { timeoutMs: 15000 });
+      // Same settle as T14: a cached table may paint before the authoritative
+      // response lands, and the delete must address the final row set.
+      await sleep(900);
+
+      const before = await evaluate(cdp, `(() => {
+        const rows = [...document.querySelectorAll('#historyTableBody tr')];
+        return {
+          texts: rows.map(r => r.textContent.trim()),
+          hasDelete: !!rows[0].querySelector('[data-hist-action="delete"]')
+        };
+      })()`);
+      assert(before.hasDelete, 'history rows must offer a delete button');
+      const totalBefore = before.texts.length;
+      assert(totalBefore > 1, 'seed must hold more than one history row');
+
+      // 1. Without a session token the backend refuses and nothing changes.
+      await evaluate(cdp, `(() => { window.__savedToken = authToken; authToken = null; return true; })()`);
+      const rejected = await evaluate(cdp, `(() => {
+        const r = renderedHistoryRows[0];
+        return apiCall('delete_history_record', {
+          timestamp: r.timestamp, date: r.date, time: r.time, rfid_uid: r.rfid_uid,
+          name: r.name, user_id: r.user_id, action: r.action, status: r.status
+        }).then(res => ({ success: !!res.success, message: res.message }));
+      })()`);
+      assertEq(rejected.success, false, 'a delete without a session token must be refused');
+      assertIncludes(rejected.message, 'Authentication required',
+        'the refusal must be the backend auth error');
+      await evaluate(cdp, `(() => { authToken = window.__savedToken; return true; })()`);
+      const rowsAfterReject = await evaluate(cdp, `document.querySelectorAll('#historyTableBody tr').length`);
+      assertEq(rowsAfterReject, totalBefore, 'a refused delete must not remove a row');
+
+      // 2. A record whose content no longer matches is refused too.
+      const mismatch = await evaluate(cdp, `(() => {
+        const r = renderedHistoryRows[0];
+        return apiCall('delete_history_record', Object.assign({}, r, { timestamp: '2020-01-01 00:00:00' }))
+          .then(res => ({ success: !!res.success, message: res.message }));
+      })()`);
+      assertEq(mismatch.success, false, 'a mismatched record must be refused');
+      assertIncludes(mismatch.message, 'not found', 'the refusal must report no matching record');
+
+      // 3. The real delete: first click arms (no native dialog), second confirms.
+      const delBefore = gas('delete_history_record');
+      const armed = await evaluate(cdp, `(() => {
+        const btn = document.querySelector('#historyTableBody [data-hist-action="delete"]');
+        btn.click();
+        return btn.classList.contains('confirm');
+      })()`);
+      assert(armed, 'the first click must arm the delete button');
+      await evaluate(cdp, `(() => {
+        document.querySelector('#historyTableBody [data-hist-action="delete"].confirm').click();
+        return true;
+      })()`);
+      await waitFor(cdp, `document.querySelectorAll('#historyTableBody tr').length === ${totalBefore - 1} ? 1 : 0`,
+        { timeoutMs: 15000 });
+      assertEq(gas('delete_history_record') - delBefore, 1, 'exactly one delete request must be issued');
+      const after = await evaluate(cdp, `[...document.querySelectorAll('#historyTableBody tr')].map(r => r.textContent.trim())`);
+      assertEq(after.length, totalBefore - 1, 'exactly one row must disappear');
+      assert(!after.includes(before.texts[0]), 'the deleted row must no longer be rendered');
+      assert(after.every(t => before.texts.includes(t)), 'every remaining row must be untouched');
     });
 
     // ---------------------------------------------------------------- T17

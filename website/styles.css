@@ -436,6 +436,83 @@ body {
   gap: 20px;
 }
 
+/* ==================== OCCUPANCY DONUT ==================== */
+/* Derived from the existing get_dashboard_data payload: no extra request. */
+.occupancy-card {
+  grid-column: 1 / -1;
+}
+
+.occupancy {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.occupancy-donut {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  /* Start the arcs at 12 o'clock instead of 3 o'clock. */
+  transform: rotate(-90deg);
+}
+
+.occupancy-seg {
+  fill: none;
+  stroke-width: 6;
+}
+
+/* Full background ring; the inside arc is drawn over it. */
+.occupancy-outside {
+  stroke: var(--border);
+}
+
+.occupancy-inside {
+  stroke: var(--success);
+}
+
+.occupancy-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.occupancy-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.occupancy-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.occupancy-dot.inside {
+  background: var(--success);
+}
+
+.occupancy-dot.outside {
+  background: var(--border);
+}
+
+.occupancy-label {
+  min-width: 56px;
+}
+
+.occupancy-count {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.occupancy-summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* ==================== STATUS LIST ==================== */
 .status-list {
   display: flex;
@@ -644,6 +721,29 @@ body {
 .btn-icon:hover {
   background: var(--bg);
   color: var(--text);
+}
+
+.btn-icon.danger {
+  color: var(--danger);
+  border-color: var(--danger-light);
+}
+
+.btn-icon.danger:hover {
+  background: var(--danger-light);
+  color: var(--danger);
+}
+
+/* First click arms the delete (no native confirm dialog); the second click
+   performs it. Re-renders reset the armed state. */
+.btn-icon.danger.confirm {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #ffffff;
+}
+
+.actions-cell {
+  white-space: nowrap;
+  width: 1%;
 }
 
 /* ==================== FORMS ==================== */
