@@ -11,8 +11,10 @@ const DEMO_MODE = false;
 const NAV_CACHE_TTL_MS = 8000;          // re-entering a page within 8 s reuses data
 const USERS_REFRESH_TTL_MS = 10000;     // users list at most once per refresh tick
 const REPORT_CACHE_TTL_MS = 25000;      // reports change slowly, cache a little longer
+const REPORT_VISIBLE_DAYS = 7;          // latest N calendar days shown by the website
 const USERS_DUPLICATE_TTL_MS = 30000;   // local duplicate-User-ID check window
 const DASHBOARD_CACHE_TTL_MS = 300000;  // last-known stats for an instant first paint
+const DASHBOARD_GAPS_TTL_MS = 15000;    // legacy-backend fallback fields (recent scans, visits)
 
 // Circuit breaker for a failing host: after a failed attempt chain, further
 // calls fail fast instead of hammering the endpoint (Google outage behaviour).
@@ -34,7 +36,10 @@ let historyData = [];
 // The exact rows currently rendered, so a delete button can address its
 // record without trusting a DOM index that filtering could shift.
 let renderedHistoryRows = [];
-let armedHistoryDelete = null;
+// Delete confirmation: the trash click stages the record, the modal confirm
+// sends exactly one request; the flag blocks a second submit while in flight.
+let pendingHistoryDelete = null;
+let historyDeleteInFlight = false;
 let reportData = [];
 let dashboardStatsSeq = 0;
 let deviceSeq = 0;
@@ -139,6 +144,17 @@ function setupEventListeners() {
   // One delegated listener instead of an inline handler per table row.
   $('usersTableBody').addEventListener('click', handleUsersTableClick);
   $('historyTableBody').addEventListener('click', handleHistoryTableClick);
+  $('deleteConfirmCancel').addEventListener('click', closeHistoryDeleteConfirm);
+  $('deleteConfirmOk').addEventListener('click', confirmHistoryDelete);
+  $('deleteConfirmOverlay').addEventListener('click', event => {
+    // Clicking the backdrop (outside the panel) is a cancel, never a delete.
+    if (event.target === $('deleteConfirmOverlay')) closeHistoryDeleteConfirm();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && pendingHistoryDelete && !historyDeleteInFlight) {
+      closeHistoryDeleteConfirm();
+    }
+  });
   window.addEventListener('online', renderSystemStatus);
   window.addEventListener('offline', renderSystemStatus);
   document.addEventListener('visibilitychange', () => {
@@ -158,31 +174,56 @@ function handleUsersTableClick(event) {
   }
 }
 
-// Deletion is destructive, so the first click arms the button (inline, no
-// native dialog that would block headless tests) and the second confirms.
-// Any other click on the table re-arms from scratch.
+// Deletion is destructive, so the trash click opens the confirmation panel.
+// The request itself is only issued by the panel's Delete button, so one
+// click arms it and one click in the panel performs it exactly once.
 function handleHistoryTableClick(event) {
   const button = event.target.closest('[data-hist-action]');
   if (!button || !$('historyTableBody').contains(button)) return;
   if (button.getAttribute('data-hist-action') !== 'delete') return;
+  if (historyDeleteInFlight) return;
 
-  const key = button.getAttribute('data-hist-key');
-  if (armedHistoryDelete !== key) {
-    armedHistoryDelete = key;
-    button.classList.add('confirm');
-    button.setAttribute('title', 'Click again to confirm deletion');
-    return;
-  }
-  armedHistoryDelete = null;
-  deleteHistoryRecord(Number(button.getAttribute('data-hist-idx')));
-}
-
-async function deleteHistoryRecord(index) {
-  const record = renderedHistoryRows[index];
+  const record = renderedHistoryRows[Number(button.getAttribute('data-hist-idx'))];
   if (!record) {
     showToast('That history record is no longer on screen', 'error');
     return;
   }
+  openHistoryDeleteConfirm(record);
+}
+
+// Stable identity for a history row: the same fields the backend matches on.
+function historyRecordKey(record) {
+  return [record.timestamp, record.date, record.time, record.rfid_uid,
+    record.name, record.user_id, record.action, record.status].join('|');
+}
+
+function openHistoryDeleteConfirm(record) {
+  pendingHistoryDelete = record;
+  setHTML($('deleteConfirmSummary'),
+    `${escapeHtml(record.date)} ${escapeHtml(record.time)} &bull; ` +
+    `${escapeHtml(record.name)} (${escapeHtml(record.rfid_uid)}) &bull; ${escapeHtml(record.action)}`);
+  const overlay = $('deleteConfirmOverlay');
+  if (overlay) overlay.style.display = 'flex';
+  const ok = $('deleteConfirmOk');
+  if (ok) ok.focus();
+}
+
+function closeHistoryDeleteConfirm() {
+  pendingHistoryDelete = null;
+  const overlay = $('deleteConfirmOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+async function confirmHistoryDelete() {
+  const record = pendingHistoryDelete;
+  // A second click while the first request is in flight must do nothing.
+  if (!record || historyDeleteInFlight) return;
+
+  historyDeleteInFlight = true;
+  const okButton = $('deleteConfirmOk');
+  const cancelButton = $('deleteConfirmCancel');
+  if (okButton) { okButton.disabled = true; okButton.textContent = 'Deleting…'; }
+  if (cancelButton) cancelButton.disabled = true;
 
   try {
     const response = await apiCall('delete_history_record', {
@@ -197,23 +238,34 @@ async function deleteHistoryRecord(index) {
     });
 
     if (!response || !response.success) {
+      // The row stays put: the backend has not confirmed anything.
       showToast('Could not delete record: ' + ((response && response.message) || 'unknown error'), 'error');
+      closeHistoryDeleteConfirm();
       // The table may be stale: reload the authoritative rows.
       loadHistory({ force: true });
       return;
     }
 
-    const idx = historyData.indexOf(record);
+    let idx = historyData.indexOf(record);
+    if (idx < 0) idx = historyData.findIndex(row => historyRecordKey(row) === historyRecordKey(record));
     if (idx >= 0) historyData.splice(idx, 1);
     // Every cached history query could contain the removed row.
     for (const key of [...responseCache.keys()]) {
       if (key.startsWith('history|')) responseCache.delete(key);
     }
+    // Occupancy and totals shown on the dashboard depend on this row.
+    responseCache.delete('dashboardStats');
+    closeHistoryDeleteConfirm();
     renderHistoryTable(filterHistoryRows(historyData, readHistoryFilters()));
     showToast('History record deleted', 'success');
   } catch (error) {
     console.error('History delete error:', error);
     showToast('Could not reach the backend to delete the record', 'error');
+    closeHistoryDeleteConfirm();
+  } finally {
+    historyDeleteInFlight = false;
+    if (okButton) { okButton.disabled = false; okButton.textContent = 'Delete'; }
+    if (cancelButton) cancelButton.disabled = false;
   }
 }
 
@@ -600,7 +652,10 @@ function loadPageData(page, isRefreshTick) {
     case 'dashboard': task = loadDashboard({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
     case 'users': task = refreshUsersTab(isRefreshTick); break;
     case 'inside': task = loadCurrentInside({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
-    case 'history': task = loadHistory({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS }); break;
+    case 'history':
+      ensureHistoryDateDefault();
+      task = loadHistory({ minAge: isRefreshTick ? 0 : NAV_CACHE_TTL_MS });
+      break;
     case 'reports':
       ensureReportDateRange();
       task = loadReport({ minAge: REPORT_CACHE_TTL_MS });
@@ -669,9 +724,13 @@ async function loadDashboardStats(options = {}) {
       sheetsState = 'ok';
       lastDashboardData = response.data || {};
       lastSyncValue = lastDashboardData.last_sync || '';
+      // First paint never waits for the fallback fields below.
+      renderDashboardStats(lastDashboardData);
+      const filled = await fillDashboardGaps(lastDashboardData);
+      if (seq !== dashboardStatsSeq) return;
       cacheWrite('dashboardStats', lastDashboardData);
       writeDashboardCache(lastDashboardData);
-      renderDashboardStats(lastDashboardData);
+      if (filled) renderDashboardStats(lastDashboardData);
     } else {
       sheetsState = 'error';
       responseCache.delete('dashboardStats');
@@ -687,6 +746,64 @@ async function loadDashboardStats(options = {}) {
   }
 
   if (seq === dashboardStatsSeq) renderSystemStatus();
+}
+
+// A backend deployed before get_dashboard_data carried recent_scans and
+// total_visits still gets both, from the SAME sheet data through get_history:
+// at most two short queries, cached for a few seconds so the 10 s refresh
+// does not repeat them. A current backend needs none of this (no request).
+// Returns true when something was filled and the screen must repaint.
+async function fillDashboardGaps(data) {
+  if (!data) return false;
+  const today = isoDateLocal(new Date());
+  const needScans = !Array.isArray(data.recent_scans);
+  const needVisits = data.total_visits === undefined || data.total_visits === null;
+  if (!needScans && !needVisits) return false;
+
+  try {
+    const cacheKey = `dashboardGaps|${today}`;
+    let fills = null;
+    const cached = cacheRead(cacheKey);
+    if (cached && (Date.now() - cached.ts) < DASHBOARD_GAPS_TTL_MS) fills = cached.value;
+
+    if (!fills) {
+      fills = {};
+      if (needScans) {
+        // get_history answers newest first, so the first five rows are the
+        // five most recent scans.
+        const response = await apiGet('get_history', { limit: 5 });
+        if (response && response.success) fills.recent_scans = (response.data.history || []);
+      }
+      if (needVisits) {
+        const response = await apiGet('get_history', {
+          filter_date: today, filter_action: 'ENTRY', limit: 1000
+        });
+        if (response && response.success) {
+          // Same definition as the Reports total_visits for a single day:
+          // distinct cards with an ENTRY on that day.
+          const entrants = new Set();
+          (response.data.history || []).forEach(row => entrants.add(String(row.rfid_uid)));
+          fills.total_visits = entrants.size;
+        }
+      }
+      cacheWrite(cacheKey, fills);
+    }
+
+    let changed = false;
+    if (needScans && fills.recent_scans !== undefined) {
+      data.recent_scans = fills.recent_scans;
+      changed = true;
+    }
+    if (needVisits && fills.total_visits !== undefined) {
+      data.total_visits = fills.total_visits;
+      changed = true;
+    }
+    return changed;
+  } catch (error) {
+    // Fallback only: a failure must never blank the statistics that did load.
+    console.error('Dashboard fallback load error:', error);
+    return false;
+  }
 }
 
 // Device status is read-only and public on the Worker, so no API key is sent.
@@ -781,32 +898,34 @@ function lastSeenLabel(edgeStatus) {
 function renderDashboardStats(data) {
   setText('statRegistered', String(data.registered_users || 0));
   setText('statInside', String(data.currently_inside || 0));
+  setText('statVisits', statCardValue(data.total_visits));
   setText('statEntries', String(data.today_entries || 0));
   setText('statExits', String(data.today_exits || 0));
-  ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(setLoadingDone);
+  ['statRegistered', 'statInside', 'statVisits', 'statEntries', 'statExits'].forEach(setLoadingDone);
   renderOccupancyPie(data);
+  renderDashboardActivity(data);
+}
 
+// Painted from a payload written before these fields existed: show an honest
+// placeholder rather than an invented zero.
+function statCardValue(value) {
+  return value === undefined || value === null ? '--' : String(value);
+}
+
+// The five most recent scans, in the order the backend returned them (newest
+// first). A backend that still only sends latest_scan paints that one row.
+function dashboardActivityScans(data) {
+  const scans = Array.isArray(data.recent_scans) && data.recent_scans.length > 0
+    ? data.recent_scans
+    : (data.latest_scan ? [data.latest_scan] : []);
+  return scans.slice(0, 5);
+}
+
+function renderDashboardActivity(data) {
   const activityEl = $('latestActivity');
-  if (data.latest_scan) {
-    const scan = data.latest_scan;
-    const scanAction = String(scan.action || '').toUpperCase();
-    const activityHTML = `
-      <div class="activity-item">
-        <div class="activity-icon ${slug(scanAction)}">
-          ${scanAction === 'ENTRY' ?
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline></svg>' :
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline></svg>'
-          }
-        </div>
-        <div class="activity-info">
-          <div class="activity-name">${escapeHtml(scan.name)}</div>
-          <div class="activity-detail">${escapeHtml(scan.action)} &bull; ${escapeHtml(scan.rfid_uid)}</div>
-        </div>
-        <div class="activity-time">${escapeHtml(formatTime(scan.timestamp))}</div>
-      </div>
-    `;
-    setHTML(activityEl, activityHTML);
-  } else {
+  const scans = dashboardActivityScans(data);
+
+  if (scans.length === 0) {
     setHTML(activityEl, `
       <div class="empty-state">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
@@ -816,7 +935,27 @@ function renderDashboardStats(data) {
         <p>No recent activity</p>
       </div>
     `);
+    return;
   }
+
+  setHTML(activityEl, scans.map(scan => {
+    const scanAction = String(scan.action || '').toUpperCase();
+    const icon = scanAction === 'ENTRY'
+      ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline></svg>'
+      : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline></svg>';
+    return `
+      <div class="activity-item">
+        <div class="activity-icon ${slug(scanAction)}">
+          ${icon}
+        </div>
+        <div class="activity-info">
+          <div class="activity-name">${escapeHtml(scan.name)}</div>
+          <div class="activity-detail">${escapeHtml(scan.action)} &bull; ${escapeHtml(scan.rfid_uid)}</div>
+        </div>
+        <div class="activity-time">${escapeHtml(formatTime(scan.timestamp))}</div>
+      </div>
+    `;
+  }).join(''));
 }
 
 function setLoadingDone(id) {
@@ -868,7 +1007,7 @@ function setOccupancyPlaceholder() {
 }
 
 function renderDashboardError(message) {
-  ['statRegistered', 'statInside', 'statEntries', 'statExits'].forEach(id => {
+  ['statRegistered', 'statInside', 'statVisits', 'statEntries', 'statExits'].forEach(id => {
     setText(id, '--');
     setLoadingDone(id);
   });
@@ -1367,13 +1506,20 @@ function scheduleHistoryLoad() {
   historyDebounceTimer = setTimeout(() => loadHistory(), FILTER_DEBOUNCE_MS);
 }
 
+// The page opens on today's records: the date filter is always filled, and a
+// cleared input falls back to today instead of silently asking for everything.
+function ensureHistoryDateDefault() {
+  const dateEl = $('historyDate');
+  if (dateEl && !dateEl.value) dateEl.value = isoDateLocal(new Date());
+  return dateEl ? dateEl.value : '';
+}
+
 // Instant feedback while the debounced authoritative request is on its way.
 // Only narrows the rows already on screen, and never paints an empty result
 // the backend has not confirmed yet.
 function previewHistoryLocally() {
   if (!historyData || historyData.length === 0) return;
   const params = readHistoryFilters();
-  if (params.filter_date) return;
   const rows = filterHistoryRows(historyData, params);
   if (rows.length > 0) renderHistoryTable(rows);
 }
@@ -1382,7 +1528,9 @@ function filterHistoryRows(records, params) {
   const name = (params.filter_name || '').toLowerCase();
   const rfid = (params.filter_rfid || '').toLowerCase();
   const action = (params.filter_action || '').toUpperCase();
+  const date = params.filter_date || '';
   return records.filter(record =>
+    (!date || String(record.date) === date) &&
     (!name || String(record.name).toLowerCase().includes(name)) &&
     (!rfid || String(record.rfid_uid).toLowerCase().includes(rfid)) &&
     (!action || String(record.action).toUpperCase() === action)
@@ -1391,7 +1539,7 @@ function filterHistoryRows(records, params) {
 
 function readHistoryFilters() {
   const params = {};
-  const date = $('historyDate').value;
+  const date = $('historyDate').value || ensureHistoryDateDefault();
   if (date) params.filter_date = date;
   const name = $('historyName').value;
   if (name) params.filter_name = name;
@@ -1438,8 +1586,6 @@ async function loadHistory(options = {}) {
 function renderHistoryTable(records) {
   const tbody = $('historyTableBody');
   renderedHistoryRows = records;
-  // A re-render replaces every button, so any pending confirm dies with it.
-  armedHistoryDelete = null;
 
   if (records.length === 0) {
     setHTML(tbody, '<tr><td colspan="8" class="empty-cell">No records found</td></tr>');
@@ -1457,7 +1603,6 @@ function renderHistoryTable(records) {
       <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
       <td class="actions-cell">
         <button type="button" class="btn-icon danger" data-hist-action="delete" data-hist-idx="${idx}"
-          data-hist-key="${escapeHtml(record.timestamp + '|' + record.rfid_uid + '|' + record.action)}"
           title="Delete this record">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"></polyline>
@@ -1491,13 +1636,34 @@ function ensureReportDateRange() {
   reportRangeInitialised = true;
 }
 
-function renderReportData(data) {
-  setText('reportEntries', String(data.total_entries || 0));
-  setText('reportExits', String(data.total_exits || 0));
-  setText('reportVisits', String(data.total_visits || 0));
-  setText('reportInside', String(data.currently_inside || 0));
+// The website shows the newest seven calendar days of whatever range was
+// requested. Older rows are untouched: they stay in the sheet and in the
+// Excel export, and only the screen is limited.
+function visibleReportRange() {
+  const today = isoDateLocal(new Date());
+  const oldestAllowed = isoDateLocal(new Date(Date.now() - (REPORT_VISIBLE_DAYS - 1) * 86400000));
+  const from = $('reportFrom').value || oldestAllowed;
+  const to = $('reportTo').value || today;
+  return {
+    from: from > oldestAllowed ? from : oldestAllowed,
+    to: to < today ? to : today,
+    clipped: from < oldestAllowed || to > today
+  };
+}
 
-  reportData = data.data || [];
+function renderReportData(data) {
+  const range = visibleReportRange();
+  const records = (data.data || []).filter(row =>
+    String(row.date) >= range.from && String(row.date) <= range.to);
+
+  const note = $('reportRangeNote');
+  if (note) {
+    note.textContent = range.clipped
+      ? `Showing the latest ${REPORT_VISIBLE_DAYS} days (${range.from} to ${range.to}). Older data remains in Google Sheets.`
+      : `Showing ${range.from} to ${range.to}.`;
+  }
+
+  reportData = records;
   renderReportTable(reportData);
 }
 
@@ -1507,7 +1673,7 @@ async function loadReport(options = {}) {
   const toDate = $('reportTo').value;
 
   if (!fromDate || !toDate) {
-    setTableMessage('reportTableBody', 'Select date range to generate report', 9);
+    setReportMessage('Select date range to generate report');
     return;
   }
 
@@ -1522,7 +1688,7 @@ async function loadReport(options = {}) {
     if (seq !== reportSeq) return;
 
     if (!response.success) {
-      setTableMessage('reportTableBody', 'Could not load report: ' + (response.message || 'unknown error'), 9);
+      setReportMessage('Could not load report: ' + (response.message || 'unknown error'));
       return;
     }
 
@@ -1532,31 +1698,80 @@ async function loadReport(options = {}) {
   } catch (error) {
     if (seq !== reportSeq) return;
     console.error('Report load error:', error);
-    setTableMessage('reportTableBody', 'Could not reach the backend to load the report. Retrying…', 9);
+    setReportMessage('Could not reach the backend to load the report. Retrying…');
   }
 }
 
-function renderReportTable(records) {
-  const tbody = $('reportTableBody');
+// One flat table markup, reused by every daily section and by the message
+// states, so the columns never drift apart.
+function reportTableHTML(bodyHTML) {
+  return `
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>S.No</th>
+            <th>Date</th>
+            <th>RFID UID</th>
+            <th>Name</th>
+            <th>User ID</th>
+            <th>Department</th>
+            <th>User Type</th>
+            <th>Action</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${bodyHTML}</tbody>
+      </table>
+    </div>`;
+}
 
+function setReportMessage(message) {
+  setHTML($('reportGroups'),
+    reportTableHTML(`<tr><td colspan="9" class="empty-cell">${escapeHtml(message)}</td></tr>`));
+}
+
+// Rows are grouped into one expandable section per day, newest day first and
+// the newest section opened, so the report reads from the most recent activity.
+function renderReportTable(records) {
   if (records.length === 0) {
-    setHTML(tbody, '<tr><td colspan="9" class="empty-cell">No data for selected date range</td></tr>');
+    setReportMessage('No data for selected date range');
     return;
   }
 
-  setHTML(tbody, records.map(record => `
-    <tr>
-      <td>${escapeHtml(record.sno)}</td>
-      <td>${escapeHtml(record.date)}</td>
-      <td><code>${escapeHtml(record.rfid_uid)}</code></td>
-      <td><strong>${escapeHtml(record.name)}</strong></td>
-      <td>${escapeHtml(record.user_id)}</td>
-      <td>${escapeHtml(record.department || '')}</td>
-      <td>${escapeHtml(record.user_type || '')}</td>
-      <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
-      <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
-    </tr>
-  `).join(''));
+  const byDate = new Map();
+  for (const record of records) {
+    const key = String(record.date);
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push(record);
+  }
+  const dates = [...byDate.keys()].sort().reverse();
+
+  setHTML($('reportGroups'), dates.map((date, index) => {
+    const rows = byDate.get(date);
+    const body = rows.map(record => `
+      <tr>
+        <td>${escapeHtml(record.sno)}</td>
+        <td>${escapeHtml(record.date)}</td>
+        <td><code>${escapeHtml(record.rfid_uid)}</code></td>
+        <td><strong>${escapeHtml(record.name)}</strong></td>
+        <td>${escapeHtml(record.user_id)}</td>
+        <td>${escapeHtml(record.department || '')}</td>
+        <td>${escapeHtml(record.user_type || '')}</td>
+        <td><span class="badge badge-${slug(record.action)}">${escapeHtml(record.action)}</span></td>
+        <td><span class="badge badge-${(record.status === 'ALLOWED' || record.status === 'AUTHORIZED') ? 'authorized' : 'denied'}">${escapeHtml(record.status)}</span></td>
+      </tr>
+    `).join('');
+
+    return `
+      <details class="report-day" data-date="${escapeHtml(date)}"${index === 0 ? ' open' : ''}>
+        <summary>
+          <span class="report-day-date">${escapeHtml(date)}</span>
+          <span class="report-day-count">${rows.length} record${rows.length === 1 ? '' : 's'}</span>
+        </summary>
+        ${reportTableHTML(body)}
+      </details>`;
+  }).join(''));
 }
 
 // ==================== EXCEL EXPORT ====================

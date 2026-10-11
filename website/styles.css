@@ -363,9 +363,10 @@ body {
 }
 
 /* ==================== STATS GRID ==================== */
+/* Five dashboard cards (Registered, Inside, Visits, Entries, Exits). */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
   margin-bottom: 24px;
 }
@@ -731,14 +732,6 @@ body {
 .btn-icon.danger:hover {
   background: var(--danger-light);
   color: var(--danger);
-}
-
-/* First click arms the delete (no native confirm dialog); the second click
-   performs it. Re-renders reset the armed state. */
-.btn-icon.danger.confirm {
-  background: var(--danger);
-  border-color: var(--danger);
-  color: #ffffff;
 }
 
 .actions-cell {
@@ -1123,7 +1116,119 @@ body {
   white-space: nowrap;
 }
 
+/* ==================== CONFIRM DIALOG ==================== */
+/* Used for history deletion: one click on the trash icon opens it, one click
+   on Delete submits the single delete_history_record request. */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 400;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+}
+
+.modal h3 {
+  font-size: 17px;
+  margin-bottom: 12px;
+}
+
+.modal-summary {
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.modal-note {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ==================== REPORTS ==================== */
+.report-range-note {
+  margin: 0;
+  padding: 0 20px 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.report-day {
+  border-top: 1px solid var(--border);
+}
+
+.report-day summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+}
+
+.report-day summary::-webkit-details-marker {
+  display: none;
+}
+
+.report-day summary::before {
+  content: '';
+  flex-shrink: 0;
+  width: 0;
+  height: 0;
+  border-left: 6px solid var(--text-muted);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  transition: transform 0.15s;
+}
+
+.report-day[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.report-day-date {
+  flex: 1;
+}
+
+.report-day-count {
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 /* ==================== RESPONSIVE ==================== */
+@media (max-width: 1280px) {
+  .stats-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
 @media (max-width: 1024px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);

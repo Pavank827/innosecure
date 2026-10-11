@@ -1126,12 +1126,37 @@ function handleGetDashboardData(payload) {
   var todayEntries = 0;
   var todayExits = 0;
   var latestScan = null;
+  var recentScans = [];
+  // Same definition as the Reports total_visits for a single day: distinct
+  // cards (RFID + date) with an ENTRY on that day.
+  var visits = {};
 
   for (var i = 1; i < logData.length; i++) {
     if (dateKeyFromCell(logData[i][1]) === today) {
-      if (logData[i][6] === 'ENTRY') todayEntries++;
+      if (logData[i][6] === 'ENTRY') {
+        todayEntries++;
+        visits[logData[i][3] + '_' + today] = true;
+      }
       if (logData[i][6] === 'EXIT') todayExits++;
     }
+  }
+
+  // The log is append-only, so the last rows are the newest scans. Read it
+  // backwards (same helper fields as handleGetHistory) for the five most
+  // recent ENTRY/EXIT rows; stray rows are skipped, never shown.
+  for (var logIndex = logData.length - 1; logIndex >= 1 && recentScans.length < 5; logIndex--) {
+    var rowAction = logData[logIndex][6];
+    if (rowAction !== 'ENTRY' && rowAction !== 'EXIT') continue;
+    recentScans.push({
+      timestamp: dateTimeTextFromCell(logData[logIndex][0]),
+      date: dateKeyFromCell(logData[logIndex][1]),
+      time: timeTextFromCell(logData[logIndex][2]),
+      rfid_uid: logData[logIndex][3],
+      name: logData[logIndex][4],
+      user_id: logData[logIndex][5],
+      action: rowAction,
+      status: logData[logIndex][7]
+    });
   }
 
   if (logData.length > 1) {
@@ -1150,6 +1175,8 @@ function handleGetDashboardData(payload) {
     currently_inside: currentlyInside,
     today_entries: todayEntries,
     today_exits: todayExits,
+    total_visits: Object.keys(visits).length,
+    recent_scans: recentScans,
     latest_scan: latestScan,
     last_sync: formatISTDateTime(),
     system_status: {

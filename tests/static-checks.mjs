@@ -136,7 +136,48 @@ check('styles.css braces are balanced', open === close, `${open} vs ${close}`);
 check('loading placeholders have a reduced-motion fallback',
   /prefers-reduced-motion: reduce/.test(stylesCss));
 
-// -------------------------------------------------------------- 9. summary
+// ------------------------------------------ 9. UI requirements (this task)
+const dashboardSlice = indexHtml.slice(
+  indexHtml.indexOf('id="page-dashboard"'),
+  indexHtml.indexOf('id="page-users"'));
+const dashboardOrder = ['statRegistered', 'statInside', 'statVisits', 'statEntries', 'statExits'];
+const orderPositions = dashboardOrder.map(id => dashboardSlice.indexOf(`id="${id}"`));
+check('dashboard shows five stat cards in the required order',
+  orderPositions.every(pos => pos >= 0) &&
+    orderPositions.every((pos, i) => i === 0 || pos > orderPositions[i - 1]),
+  JSON.stringify(orderPositions));
+check('dashboard has exactly five stat cards',
+  (dashboardSlice.match(/class="stat-card"/g) || []).length === 5);
+check('Total Visits is wired to the Reports definition (distinct cards that entered today)',
+  /setText\('statVisits', statCardValue\(data\.total_visits\)\)/.test(appJs) &&
+    /distinct cards with an ENTRY on that day/.test(appJs));
+check('Reports page has no summary stat cards',
+  ['reportEntries', 'reportExits', 'reportVisits', 'reportInside']
+    .every(id => !indexHtml.includes(`id="${id}"`) && !appJs.includes(`'${id}'`)));
+
+check('history delete opens a confirmation dialog on the first click',
+  ['deleteConfirmOverlay', 'deleteConfirmOk', 'deleteConfirmCancel', 'deleteConfirmSummary']
+    .every(id => htmlIds.has(id)) &&
+    /function openHistoryDeleteConfirm\(/.test(appJs) &&
+    /function confirmHistoryDelete\(/.test(appJs));
+check('the two-click arming state is gone',
+  !appJs.includes('armedHistoryDelete') && !stylesCss.includes('.btn-icon.danger.confirm'));
+
+check('dashboard shows up to five recent activities',
+  /return scans\.slice\(0, 5\);/.test(appJs) && /function renderDashboardActivity\(/.test(appJs));
+check('history defaults to today',
+  /function ensureHistoryDateDefault\(/.test(appJs) &&
+    /\$\('historyDate'\)\.value \|\| ensureHistoryDateDefault\(\)/.test(appJs));
+check('reports are grouped by day and capped at the latest seven days',
+  /const REPORT_VISIBLE_DAYS = 7;/.test(appJs) &&
+    /class="report-day"/.test(appJs) &&
+    /id="reportGroups"/.test(indexHtml) &&
+    /id="reportRangeNote"/.test(indexHtml) &&
+    /\.sort\(\)\.reverse\(\)/.test(appJs));
+check('the seven-day cap is a display rule only (the request keeps the chosen range)',
+  /apiGet\('get_reports', \{ from_date: fromDate, to_date: toDate \}\)/.test(appJs));
+
+// ----------------------------------------------------------- 10. summary
 const failed = results.filter(r => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} static checks passed`);
 if (failed.length) {

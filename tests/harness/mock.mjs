@@ -64,9 +64,12 @@ function buildDataset() {
     rfid_uid: u.rfid_uid
   }));
 
-  // 7 days of history, a handful of rows per day (newest first).
+  // 10 days of history in append order (oldest row first, exactly like the
+  // Access_Log sheet). get_history serves the newest rows first, which is how
+  // the Apps Script backend answers (it walks the sheet backwards).
+  const HISTORY_DAYS = 10;
   const history = [];
-  for (let day = 0; day < 7; day++) {
+  for (let day = HISTORY_DAYS - 1; day >= 0; day--) {
     const date = new Date(Date.now() - day * 86400000);
     const p = n => String(n).padStart(2, '0');
     const key = `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
@@ -85,9 +88,15 @@ function buildDataset() {
       });
     }
   }
-  history.reverse();
 
   return { users, inside, history };
+}
+
+// Local calendar day, same shape the backend returns in record.date.
+function localDateKey(offsetMs = 0) {
+  const date = new Date(Date.now() + offsetMs);
+  const p = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}`;
 }
 
 function envelope(success, message, data) {
@@ -101,6 +110,8 @@ export function createMockBackend(options = {}) {
     backend: options.backend || 'ok',     // 'ok' | 'fail' (Apps Script down)
     edgeMode: options.edgeMode || 'ok',   // 'ok' | 'fail'
     deviceState: options.deviceState || 'ONLINE',
+    dashboardLegacy: false,               // drop recent_scans/total_visits (old backend)
+    deleteFail: false,                    // delete_history_record always refuses
     requests: [],                          // every intercepted request
     maxConcurrentByKey: {},                // worst observed overlap per action
     counters: {},
@@ -140,8 +151,14 @@ export function createMockBackend(options = {}) {
       case 'login':
         if (params.password === 'wrong') return envelope(false, 'Invalid username or password');
         return envelope(true, 'Login successful', { token: 'mock-session-token', username: params.username, role: 'admin' });
-      case 'get_dashboard_data':
-        return envelope(true, 'Dashboard data retrieved', {
+      case 'get_dashboard_data': {
+        // Same shape the Apps Script backend answers with: five most recent
+        // scans, and the distinct cards that entered today (the Reports
+        // total_visits scoped to a single day).
+        const today = localDateKey();
+        const newestFirst = [...dataset.history]
+          .sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
+        const payload = {
           registered_users: state.registered.length,
           currently_inside: dataset.inside.length,
           today_entries: 58,
@@ -155,7 +172,17 @@ export function createMockBackend(options = {}) {
           },
           last_sync: istNow(-5000),
           system_status: { esp32: 'ONLINE', rfid: 'READY', internet: 'CONNECTED', google_sheets: 'SYNCED' }
-        });
+        };
+        if (!state.dashboardLegacy) {
+          payload.recent_scans = newestFirst
+            .filter(r => r.action === 'ENTRY' || r.action === 'EXIT')
+            .slice(0, 5);
+          payload.total_visits = new Set(dataset.history
+            .filter(r => r.date === today && r.action === 'ENTRY')
+            .map(r => r.rfid_uid)).size;
+        }
+        return envelope(true, 'Dashboard data retrieved', payload);
+      }
       case 'get_users':
         return envelope(true, 'Users retrieved', { users: state.registered });
       case 'get_current_inside':
@@ -166,12 +193,15 @@ export function createMockBackend(options = {}) {
         const rfid = String(params.filter_rfid || '').toLowerCase();
         const actionFilter = String(params.filter_action || '').toUpperCase();
         const limit = Number(params.limit) > 0 ? Math.min(Number(params.limit), 1000) : 100;
-        const rows = dataset.history.filter(row =>
+        const matched = dataset.history.filter(row =>
           (!date || row.date === date) &&
           (!name || row.name.toLowerCase().includes(name)) &&
           (!rfid || row.rfid_uid.toLowerCase().includes(rfid)) &&
           (!actionFilter || row.action === actionFilter)
-        ).slice(0, limit);
+        );
+        // Newest first, at most `limit` rows: the Apps Script backend walks
+        // the sheet backwards and stops once the limit is reached.
+        const rows = matched.slice(Math.max(0, matched.length - limit)).reverse();
         return envelope(true, 'History retrieved', { history: rows });
       }
       case 'get_reports': {
@@ -185,7 +215,10 @@ export function createMockBackend(options = {}) {
           to_date: to,
           total_entries: rows.filter(r => r.action === 'ENTRY').length,
           total_exits: rows.filter(r => r.action === 'EXIT').length,
-          total_visits: 18,
+          // Same definition as the real backend: distinct (card, day) pairs.
+          total_visits: new Set(rows
+            .filter(r => r.action === 'ENTRY')
+            .map(r => `${r.rfid_uid}_${r.date}`)).size,
           currently_inside: dataset.inside.length,
           data: rows
         });
@@ -213,6 +246,9 @@ export function createMockBackend(options = {}) {
         // no deletion.
         if (!params.auth_token) {
           return envelope(false, 'Authentication required for delete_history_record');
+        }
+        if (state.deleteFail) {
+          return envelope(false, 'Sheet write rejected by the backend');
         }
         const key = r => [r.timestamp, r.date, r.time, r.rfid_uid, r.name,
           r.user_id, r.action, r.status].join('|');
@@ -377,6 +413,8 @@ export function createMockBackend(options = {}) {
       state.counters = {};
       state.maxConcurrentByKey = {};
       state.failCount = 0;
+      state.dashboardLegacy = false;
+      state.deleteFail = false;
     },
     requestsOf(kind, key) {
       return state.requests.filter(r => (!kind || r.kind === kind) && (!key || r.key === key));

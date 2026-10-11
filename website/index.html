@@ -244,6 +244,19 @@
             </div>
           </div>
           <div class="stat-card">
+            <div class="stat-icon blue">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
+                <circle cx="9" cy="7" r="4"></circle>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>
+              </svg>
+            </div>
+            <div class="stat-info">
+              <span class="stat-label">Total Visits</span>
+              <span class="stat-value loading" id="statVisits">--</span>
+            </div>
+          </div>
+          <div class="stat-card">
             <div class="stat-icon purple">
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
@@ -657,91 +670,54 @@
           </div>
         </div>
 
-        <!-- Report Stats -->
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-icon green">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
-                <polyline points="17 6 23 6 23 12"></polyline>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-label">Total Entries</span>
-              <span class="stat-value" id="reportEntries">--</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon orange">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline>
-                <polyline points="17 18 23 18 23 12"></polyline>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-label">Total Exits</span>
-              <span class="stat-value" id="reportExits">--</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon blue">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
-                <circle cx="9" cy="7" r="4"></circle>
-                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-label">Total Visits</span>
-              <span class="stat-value" id="reportVisits">--</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon purple">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M16 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path>
-                <circle cx="8.5" cy="7" r="4"></circle>
-                <polyline points="17 11 19 13 23 9"></polyline>
-              </svg>
-            </div>
-            <div class="stat-info">
-              <span class="stat-label">Currently Inside</span>
-              <span class="stat-value" id="reportInside">--</span>
-            </div>
-          </div>
-        </div>
-
         <!-- Report Table -->
         <div class="card">
           <div class="card-header">
             <h3>Report Data</h3>
           </div>
-          <div class="table-container">
-            <table class="table">
-              <thead>
-                <tr>
-                  <th>S.No</th>
-                  <th>Date</th>
-                  <th>RFID UID</th>
-                  <th>Name</th>
-                  <th>User ID</th>
-                  <th>Department</th>
-                  <th>User Type</th>
-                  <th>Action</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody id="reportTableBody">
-                <tr>
-                  <td colspan="9" class="empty-cell">Select date range to generate report</td>
-                </tr>
-              </tbody>
-            </table>
+          <p class="report-range-note" id="reportRangeNote">Showing the latest 7 days. Older data remains in Google Sheets.</p>
+          <div id="reportGroups">
+            <div class="table-container">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>S.No</th>
+                    <th>Date</th>
+                    <th>RFID UID</th>
+                    <th>Name</th>
+                    <th>User ID</th>
+                    <th>Department</th>
+                    <th>User Type</th>
+                    <th>Action</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="reportTableBody">
+                  <tr>
+                    <td colspan="9" class="empty-cell">Select date range to generate report</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
 
     </main>
+  </div>
+
+  <!-- History delete confirmation: the first click on a trash icon opens this,
+       one click here submits exactly one delete_history_record request. -->
+  <div id="deleteConfirmOverlay" class="modal-overlay" style="display:none;">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="deleteConfirmTitle">
+      <h3 id="deleteConfirmTitle">Delete this history record?</h3>
+      <p class="modal-summary" id="deleteConfirmSummary"></p>
+      <p class="modal-note">The row is removed permanently from the Access_Log sheet.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="deleteConfirmCancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="deleteConfirmOk">Delete</button>
+      </div>
+    </div>
   </div>
 
   <!-- Toast Notification -->

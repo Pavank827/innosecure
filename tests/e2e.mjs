@@ -459,19 +459,19 @@ async function main() {
         const input = document.getElementById('historyName');
         input.value = '';
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        for (const ch of 'Neha') {
+        for (const ch of 'Priya') {
           input.value += ch;
           input.dispatchEvent(new Event('input', { bubbles: true }));
         }
         return { changed: table.textContent !== window.__histBefore, text: table.textContent };
       })()`);
       assert(typed.changed, 'the filtered rows must update before the debounced request answers');
-      assertIncludes(typed.text, 'Neha Gupta', 'the preview must show matching rows');
+      assertIncludes(typed.text, 'Priya Patel', 'the preview must show matching rows');
 
       await sleep(1300);
       assertEq(gas('get_history') - before, 1, '4 keystrokes must cost exactly one request');
       const final = await evaluate(cdp, `document.getElementById('historyTableBody').textContent`);
-      assertIncludes(final, 'Neha Gupta', 'the authoritative response is rendered too');
+      assertIncludes(final, 'Priya Patel', 'the authoritative response is rendered too');
       assert(!final.includes('Rahul Sharma'), 'the filtered table must not contain non-matching rows');
 
       // Clear the filter again so later steps start from a known state.
@@ -486,46 +486,145 @@ async function main() {
       assert(gas('get_history') - clearBefore <= 1, 'clearing the filter costs at most one request');
     });
 
+    // ---------------------------------------------------------------- T14b
+    await step('history shows today by default and still honours the other filters', async () => {
+      await evaluate(cdp, `navigateTo('history'); true`);
+      const dateValue = await waitFor(cdp,
+        `document.getElementById('historyDate').value || 0`, { timeoutMs: 10000 });
+      const today = localIso(new Date());
+      const yesterday = localIso(new Date(Date.now() - 86400000));
+      assertEq(dateValue, today, 'the date filter must default to today');
+
+      await waitFor(cdp, `document.querySelectorAll('#historyTableBody tr').length > 0 ? 1 : 0`,
+        { timeoutMs: 15000 });
+      await sleep(700);
+      const todayRows = await evaluate(cdp,
+        `[...document.querySelectorAll('#historyTableBody tr')].map(r => r.textContent)`);
+      assertEq(todayRows.length, 6, 'today holds six seeded records');
+      assert(todayRows.every(t => t.includes(today)),
+        'every rendered row must belong to today');
+
+      // Picking an older day must go to the backend and replace the table.
+      const before = gas('get_history');
+      await evaluate(cdp, `(() => {
+        const input = document.getElementById('historyDate');
+        input.value = '${yesterday}';
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      await sleep(1400);
+      assert(gas('get_history') - before >= 1, 'changing the date must fetch from the backend');
+      const older = await evaluate(cdp, `(() => ({
+        text: document.getElementById('historyTableBody').textContent,
+        rows: document.querySelectorAll('#historyTableBody tr').length
+      }))()`);
+      assert(older.rows > 0, 'the older day must render rows');
+      assertIncludes(older.text, yesterday, 'the older rows must be from the chosen day');
+      assert(!older.text.includes(today), 'today rows must not survive a different date');
+
+      // Leave the page on today for the delete step that follows.
+      await evaluate(cdp, `(() => {
+        const input = document.getElementById('historyDate');
+        input.value = '${today}';
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      await sleep(1400);
+      const backToday = await evaluate(cdp, `document.querySelectorAll('#historyTableBody tr').length`);
+      assertEq(backToday, 6, 'switching back to today must restore today\'s rows');
+    });
+
     // ---------------------------------------------------------------- T15
-    await step('reports default to the last 7 days and honour the cache window', async () => {
+    await step('reports open as daily sections (newest first, seven-day cap, cached)', async () => {
       // The page was first opened during the navigation step above; that load
       // plus every revisit inside the 25 s window must stay at one request.
       const before = gas('get_reports');
       await evaluate(cdp, `navigateTo('reports'); true`);
       // Give the (async) request time to be issued and answered before the
       // count is checked: the table text from the previous visit is still on
-      // screen, so "table has rows" alone is not a completion signal.
+      // screen, so "has sections" alone is not a completion signal.
       await sleep(1200);
 
-      const today = new Date();
-      const expectedFrom = localIso(new Date(today.getTime() - 6 * 86400000));
-      const expectedTo = localIso(today);
+      const today = localIso(new Date());
+      const expectedFrom = localIso(new Date(Date.now() - 6 * 86400000));
+      const expectedTo = localIso(new Date());
       const ui = await evaluate(cdp, `(() => ({
         from: document.getElementById('reportFrom').value,
         to: document.getElementById('reportTo').value,
-        entries: document.getElementById('reportEntries').textContent.trim(),
-        rows: document.querySelectorAll('#reportTableBody tr').length
+        cards: document.querySelectorAll('#page-reports .stat-card').length,
+        days: [...document.querySelectorAll('#reportGroups .report-day')].map(d => d.getAttribute('data-date')),
+        openCount: document.querySelectorAll('#reportGroups .report-day[open]').length,
+        rows: document.querySelectorAll('#reportGroups .report-day tbody tr').length,
+        note: document.getElementById('reportRangeNote').textContent.trim()
       }))()`);
       assertEq(ui.from, expectedFrom, 'default report start date (7 days incl. today)');
       assertEq(ui.to, expectedTo, 'default report end date (today)');
+      assertEq(ui.cards, 0, 'the four summary cards must be gone from the Reports page');
       assertEq(before, 1, 'the first visit to the reports page must issue exactly one request');
       assertEq(gas('get_reports') - before, 0, 're-entering must reuse the cached report');
-      assert(/^\d+$/.test(ui.entries), 'report totals must be filled in');
-      assert(ui.rows > 0, 'report table must contain rows');
-      // Precondition for the revisit below: the entry must still be inside the
-      // cache window, otherwise the "no refetch" claim would be a timing guess.
-      assert(await evaluate(cdp, `cacheIsFresh(\`report|\${document.getElementById('reportFrom').value}|\${document.getElementById('reportTo').value}\`, REPORT_CACHE_TTL_MS)`),
-        'the report cache must still be fresh');
+      assert(ui.days.length > 0, 'report rows must be grouped into daily sections');
+      assertEq(ui.days.length, new Set(ui.days).size, 'each day must appear exactly once');
+      assert(ui.days.every((d, i) => i === 0 || d < ui.days[i - 1]), 'days must be ordered newest first');
+      assertEq(ui.days[0], today, 'the newest day must come first');
+      assertEq(ui.openCount, 1, 'exactly the newest day is open by default');
+      assert(ui.rows > 0, 'the grouped tables must contain rows');
+      assertIncludes(ui.note, 'Showing', 'the range note must describe what is shown');
 
+      // Expanding/collapsing days is pure DOM state: never a request.
+      const toggleBefore = gas('get_reports');
+      await evaluate(cdp, `(() => {
+        document.querySelectorAll('#reportGroups .report-day').forEach(day => { day.open = !day.open; });
+        return true;
+      })()`);
+      await sleep(500);
+      assertEq(gas('get_reports') - toggleBefore, 0, 'toggling a day must issue no request');
+
+      // Revisiting inside the cache window repaints from cache.
       const revisitBefore = gas('get_reports');
       const painted = await evaluate(cdp, `(() => {
         navigateTo('dashboard');
         navigateTo('reports');
-        return document.querySelectorAll('#reportTableBody tr').length;
+        return document.querySelectorAll('#reportGroups .report-day').length;
       })()`);
       assert(painted > 0, 'revisiting reports must repaint instantly from cache');
       await sleep(700);
       assertEq(gas('get_reports') - revisitBefore, 0, 'no report request while the cache is fresh');
+    });
+
+    // ---------------------------------------------------------------- T15b
+    await step('asking for a longer range still shows only the latest seven days', async () => {
+      const wideFrom = localIso(new Date(Date.now() - 30 * 86400000));
+      const today = localIso(new Date());
+      const before = gas('get_reports');
+      await evaluate(cdp, `(() => {
+        const input = document.getElementById('reportFrom');
+        input.value = '${wideFrom}';
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      await sleep(1400);
+      assertEq(gas('get_reports') - before, 1, 'a new range must be fetched once');
+
+      const ui = await evaluate(cdp, `(() => ({
+        days: [...document.querySelectorAll('#reportGroups .report-day')].map(d => d.getAttribute('data-date')),
+        note: document.getElementById('reportRangeNote').textContent.trim()
+      }))()`);
+      assert(ui.days.length <= 7, `at most seven daily sections, got ${ui.days.length}`);
+      assertEq(ui.days[0], today, 'the newest day must still come first');
+      assert(ui.days.every(d => d >= localIso(new Date(Date.now() - 6 * 86400000))),
+        'no section may fall outside the latest seven days');
+      assertIncludes(ui.note, 'latest 7 days', 'the note must say the range was capped');
+      assertIncludes(ui.note, 'Google Sheets', 'the note must point at where older data lives');
+
+      // Put the default range back so the page is left in its usual state.
+      const back = localIso(new Date(Date.now() - 6 * 86400000));
+      await evaluate(cdp, `(() => {
+        const input = document.getElementById('reportFrom');
+        input.value = '${back}';
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      })()`);
+      await sleep(1000);
     });
 
     // ---------------------------------------------------------------- T16
@@ -572,8 +671,49 @@ async function main() {
         'the chart must not add requests beyond the page navigation load');
     });
 
+    // ---------------------------------------------------------------- T16d
+    await step('dashboard shows Total Visits and the five most recent activities', async () => {
+      await evaluate(cdp, `navigateTo('dashboard'); true`);
+      await waitFor(cdp, `/^\\d+$/.test(document.getElementById('statVisits').textContent.trim()) ? 1 : 0`,
+        { timeoutMs: 15000 });
+      // Give any (cache-miss) dashboard request triggered by the navigation
+      // time to land before the values are compared.
+      await sleep(700);
+
+      const before = gas('get_dashboard_data');
+      const ui = await evaluate(cdp, `(() => ({
+        visits: document.getElementById('statVisits').textContent.trim(),
+        cards: [...document.querySelectorAll('#page-dashboard .stat-card .stat-label')]
+          .map(el => el.textContent.trim()),
+        activities: [...document.querySelectorAll('#latestActivity .activity-item')].map(item => ({
+          name: item.querySelector('.activity-name').textContent.trim(),
+          time: item.querySelector('.activity-time').textContent.trim()
+        })),
+        payloadScans: Array.isArray(lastDashboardData.recent_scans) ? lastDashboardData.recent_scans.length : 0,
+        payloadVisits: lastDashboardData.total_visits
+      }))()`);
+
+      assertEq(ui.cards.join(' | '),
+        `Registered Users | Currently Inside | Total Visits | Today's Entries | Today's Exits`,
+        'the five dashboard cards, in order');
+      assertEq(ui.visits, String(ui.payloadVisits), 'the card must show the payload value');
+      assertEq(ui.visits, '4', 'distinct cards that entered today (the mock seeds four)');
+      assertEq(ui.activities.length, 5, 'exactly five recent activities must be listed');
+      assertEq(ui.payloadScans, 5, 'the payload must carry the five scans');
+
+      const times = ui.activities.map(a => a.time);
+      assertEq(times.join(), [...times].sort().reverse().join(),
+        'activities must be listed newest first');
+      assertEq(ui.activities[0].name, 'Vikram Iyer', 'the newest scan comes first');
+      assertEq(ui.activities[4].name, 'Rahul Sharma', 'the fifth scan is the oldest of the five');
+      assert(ui.activities.every(a => /^\d{2}:\d{2}:\d{2}$/.test(a.time)),
+        'every activity shows a real time');
+      // Both new fields ride along on the existing request: no extra traffic.
+      assertEq(gas('get_dashboard_data') - before, 0, 'the activity list must cost no extra request');
+    });
+
     // ---------------------------------------------------------------- T16c
-    await step('one history record can be deleted (auth, exact match, one row)', async () => {
+    await step('one history record is deleted through the confirmation dialog (one request)', async () => {
       await evaluate(cdp, `navigateTo('history'); true`);
       await waitFor(cdp, `document.querySelectorAll('#historyTableBody tr').length > 0 &&
         !/Loading history/.test(document.getElementById('historyTableBody').textContent) ? 1 : 0`,
@@ -618,18 +758,72 @@ async function main() {
       assertEq(mismatch.success, false, 'a mismatched record must be refused');
       assertIncludes(mismatch.message, 'not found', 'the refusal must report no matching record');
 
-      // 3. The real delete: first click arms (no native dialog), second confirms.
-      const delBefore = gas('delete_history_record');
-      const armed = await evaluate(cdp, `(() => {
-        const btn = document.querySelector('#historyTableBody [data-hist-action="delete"]');
-        btn.click();
-        return btn.classList.contains('confirm');
-      })()`);
-      assert(armed, 'the first click must arm the delete button');
+      // 3. The first click opens the dialog and issues no request at all.
+      const firstRfid = await evaluate(cdp, `renderedHistoryRows[0].rfid_uid`);
+      const openBefore = gas('delete_history_record');
       await evaluate(cdp, `(() => {
-        document.querySelector('#historyTableBody [data-hist-action="delete"].confirm').click();
+        document.querySelector('#historyTableBody [data-hist-action="delete"]').click();
         return true;
       })()`);
+      const opened = await evaluate(cdp, `(() => ({
+        visible: getComputedStyle(document.getElementById('deleteConfirmOverlay')).display !== 'none',
+        summary: document.getElementById('deleteConfirmSummary').textContent,
+        rows: document.querySelectorAll('#historyTableBody tr').length
+      }))()`);
+      assert(opened.visible, 'the first click must open the confirmation dialog');
+      assertIncludes(opened.summary, firstRfid, 'the dialog must describe the record being deleted');
+      assertEq(opened.rows, totalBefore, 'no row may disappear before the confirmation');
+      await sleep(500);
+      assertEq(gas('delete_history_record') - openBefore, 0, 'opening the dialog must send no request');
+
+      // 4. Cancel closes the dialog and still sends nothing.
+      await evaluate(cdp, `document.getElementById('deleteConfirmCancel').click(); true`);
+      const cancelled = await evaluate(cdp, `(() => ({
+        visible: getComputedStyle(document.getElementById('deleteConfirmOverlay')).display !== 'none',
+        rows: document.querySelectorAll('#historyTableBody tr').length
+      }))()`);
+      assert(!cancelled.visible, 'cancel must close the dialog');
+      assertEq(cancelled.rows, totalBefore, 'cancel must not remove a row');
+      await sleep(400);
+      assertEq(gas('delete_history_record') - openBefore, 0, 'cancel must send no request');
+
+      // 5. A failing backend: exactly one request, the real message, the row stays.
+      mock.state.deleteFail = true;
+      try {
+        const failBefore = gas('delete_history_record');
+        await evaluate(cdp, `(() => {
+          document.querySelector('#historyTableBody [data-hist-action="delete"]').click();
+          return true;
+        })()`);
+        // Three clicks in one tick: only the first may reach the backend.
+        await evaluate(cdp, `(() => {
+          const ok = document.getElementById('deleteConfirmOk');
+          ok.click(); ok.click(); ok.click();
+          return true;
+        })()`);
+        const toast = await waitFor(cdp, `(() => {
+          const el = document.getElementById('toast');
+          return el && el.style.display === 'block' ? document.getElementById('toastMessage').textContent : 0;
+        })()`, { timeoutMs: 10000 });
+        assertIncludes(toast, 'Sheet write rejected', 'the real backend message must be shown');
+        await waitFor(cdp,
+          `document.getElementById('deleteConfirmOverlay').style.display === 'none' ? 1 : 0`,
+          { timeoutMs: 5000 });
+        const failed = await evaluate(cdp, `document.querySelectorAll('#historyTableBody tr').length`);
+        assertEq(failed, totalBefore, 'a refused delete must keep the row on screen');
+        assertEq(gas('delete_history_record') - failBefore, 1,
+          'even three clicks must cost exactly one request');
+      } finally {
+        mock.state.deleteFail = false;
+      }
+
+      // 6. The real delete: one click opens the dialog, one click confirms it.
+      const delBefore = gas('delete_history_record');
+      await evaluate(cdp, `(() => {
+        document.querySelector('#historyTableBody [data-hist-action="delete"]').click();
+        return true;
+      })()`);
+      await evaluate(cdp, `document.getElementById('deleteConfirmOk').click(); true`);
       await waitFor(cdp, `document.querySelectorAll('#historyTableBody tr').length === ${totalBefore - 1} ? 1 : 0`,
         { timeoutMs: 15000 });
       assertEq(gas('delete_history_record') - delBefore, 1, 'exactly one delete request must be issued');
@@ -637,6 +831,49 @@ async function main() {
       assertEq(after.length, totalBefore - 1, 'exactly one row must disappear');
       assert(!after.includes(before.texts[0]), 'the deleted row must no longer be rendered');
       assert(after.every(t => before.texts.includes(t)), 'every remaining row must be untouched');
+      assert(await evaluate(cdp,
+        `getComputedStyle(document.getElementById('deleteConfirmOverlay')).display === 'none'`),
+        'the dialog must close after a successful delete');
+    });
+
+    // ---------------------------------------------------------------- T16e
+    await step('a legacy backend (no new fields) still gets activities and Total Visits', async () => {
+      // Simulates an Apps Script deployment from before this change.
+      mock.state.dashboardLegacy = true;
+      try {
+        await evaluate(cdp, `(() => {
+          responseCache.delete('dashboardStats');
+          responseCache.delete('dashboardGaps|' + isoDateLocal(new Date()));
+          lastDashboardData = null;
+          return true;
+        })()`);
+        const before = { dash: gas('get_dashboard_data'), hist: gas('get_history') };
+        await evaluate(cdp, `loadDashboard({ minAge: 0 })`);
+
+        const ui = await waitFor(cdp, `(() => {
+          const visits = document.getElementById('statVisits').textContent.trim();
+          const activities = document.querySelectorAll('#latestActivity .activity-item').length;
+          return (/^\\d+$/.test(visits) && activities === 5) ? { visits, activities } : 0;
+        })()`, { timeoutMs: 20000 });
+        assertEq(ui.visits, '4', 'Total Visits must be derived from the fallback query');
+        assertEq(ui.activities, 5, 'five activities must be derived from the fallback query');
+        assertEq(gas('get_history') - before.hist, 2,
+          'the fallback must cost exactly two history queries');
+        assertEq(gas('get_dashboard_data') - before.dash, 1,
+          'the fallback must not add dashboard requests');
+      } finally {
+        mock.state.dashboardLegacy = false;
+        await evaluate(cdp, `(() => {
+          responseCache.delete('dashboardGaps|' + isoDateLocal(new Date()));
+          responseCache.delete('dashboardStats');
+          lastDashboardData = null;
+          return true;
+        })()`);
+      }
+      // Leave a healthy dashboard behind for the remaining steps.
+      await evaluate(cdp, `loadDashboard({ minAge: 0 })`);
+      await waitFor(cdp, `document.getElementById('systemStatusText').textContent === 'System Online' ? 1 : 0`,
+        { timeoutMs: 20000 });
     });
 
     // ---------------------------------------------------------------- T17
