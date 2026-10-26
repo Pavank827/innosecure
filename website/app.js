@@ -2,12 +2,22 @@
 const API_URL = 'https://script.google.com/macros/s/AKfycbxgofza5uMuvmm-nEFbi4EQWT_SGYDVLOLh8xbJ12C-bpvoW3JGI9it5WN9-RhKWTn6-g/exec';
 // Cloudflare Worker: device liveness only (no API key required for action=device_status).
 const EDGE_API_URL = 'https://makerspace-rfid-edge-api.makerspace-rfid-edge-api.workers.dev/';
-const REFRESH_INTERVAL = 10000;
+// Live-refresh cadence. A card tap must appear within ~1-2 s of the backend
+// write, so the visible page revalidates on a short adaptive timer instead of
+// the old fixed 10 s tick (which alone accounted for ~5-10 s of the observed
+// 10-15 s delay). The delay is re-measured after every cycle: healthy and fast
+// Apps Script answers keep the 2 s pace; a slow or failing host stretches it
+// (up to REFRESH_MAX_MS) so polling never piles onto a struggling backend.
+const REFRESH_INTERVAL = 2000;          // live target (~1-2 s after a write)
+const REFRESH_FAST_OK_MS = 1500;        // response time still treated as healthy
+const REFRESH_SLOW_MS = 5000;           // stretched after a slow response
+const REFRESH_ERROR_BACKOFF_MS = 8000;  // first backoff step after a failure
+const REFRESH_MAX_MS = 10000;           // ceiling (outage / very slow host)
 const FILTER_DEBOUNCE_MS = 400;
 const DEMO_MODE = false;
 
 // Cache policy (milliseconds). Only data that has not changed since the last
-// fetch may be reused; the 10-second auto refresh still runs on its own timer.
+// fetch may be reused; the adaptive auto refresh still runs on its own timer.
 const NAV_CACHE_TTL_MS = 8000;          // re-entering a page within 8 s reuses data
 const USERS_REFRESH_TTL_MS = 10000;     // users list at most once per refresh tick
 const REPORT_CACHE_TTL_MS = 25000;      // reports change slowly, cache a little longer
@@ -26,6 +36,14 @@ const HOST_COOLDOWN_MS = [15000, 30000, 45000, 60000];
 let currentPage = 'dashboard';
 let refreshTimer = null;
 let refreshInFlight = false;
+// Set by the test harness (and startAutoRefresh) so a paused page never
+// reschedules a tick from a cycle that was already in flight.
+let refreshPaused = false;
+let refreshDelayMs = REFRESH_INTERVAL;
+// Highest device last_seen seen so far (ms). An advance means the ESP32 just
+// talked to the Worker (card tap or registration poll) and is used as a
+// lightweight "something happened" nudge for an immediate stats refresh.
+let lastDeviceSeenMs = 0;
 let isAuthenticated = false;
 let authToken = null;
 let registrationUID = '';
@@ -459,7 +477,7 @@ function logout() {
   $('loginUsername').value = '';
   $('loginPassword').value = '';
   $('loginError').style.display = 'none';
-  if (refreshTimer) clearInterval(refreshTimer);
+  pauseAutoRefresh();
 }
 
 function showMainApp() {
@@ -509,6 +527,11 @@ async function fetchJSON(url, options = {}, attemptsOverride) {
     throw cooldownError;
   }
 
+  // Never let the browser (or an intermediary) answer a dashboard/API GET
+  // from HTTP cache: a few milliseconds of staleness after a card tap is the
+  // exact problem this refresh path exists to fix.
+  const opts = options && options.cache ? options : Object.assign({ cache: 'no-store' }, options);
+
   // While the host is recovering, probe with a single request; healthy hosts
   // keep the full transient-blip retry chain.
   const attempts = attemptsOverride || (hostIsSick(url) ? 1 : API_MAX_ATTEMPTS);
@@ -516,7 +539,7 @@ async function fetchJSON(url, options = {}, attemptsOverride) {
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, opts);
       if (!response.ok) throw new Error('HTTP error ' + response.status);
 
       const json = await response.json();
@@ -604,8 +627,12 @@ async function apiGet(action, params = {}) {
 
   const key = `GET ${action} ${JSON.stringify(params)}`;
   return singleFlight(key, () => {
+    // nc= is a cache-buster only: Google's script.googleusercontent.com echo
+    // target has been observed serving a GET from a short-lived cache, which
+    // delayed a fresh event by several seconds. It is NOT part of the
+    // single-flight key, so two callers still share one request.
     const queryString = new URLSearchParams({ action, ...params }).toString();
-    return fetchJSON(`${API_URL}?${queryString}`);
+    return fetchJSON(`${API_URL}?${queryString}&nc=${Date.now()}`);
   });
 }
 
@@ -665,22 +692,80 @@ function loadPageData(page, isRefreshTick) {
 }
 
 // ==================== AUTO REFRESH ====================
+// Schedules the next cycle. A paused page (tests, logout) never reschedules.
+function scheduleRefresh(delayMs) {
+  if (refreshPaused) return;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(runRefreshCycle, Math.max(0, delayMs));
+}
+
+// (Re)starts the live cadence from a healthy baseline.
 function startAutoRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshNow, REFRESH_INTERVAL);
+  refreshPaused = false;
+  refreshDelayMs = REFRESH_INTERVAL;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  scheduleRefresh(REFRESH_INTERVAL);
+}
+
+// Stops the cadence without touching in-flight work (tests, logout).
+function pauseAutoRefresh() {
+  refreshPaused = true;
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
 }
 
 // One refresh at a time: Apps Script calls can take several seconds, and a
-// 10 s timer would otherwise pile new requests on top of unfinished ones.
-function refreshNow() {
-  if (refreshInFlight) return;
+// short timer would otherwise pile new requests on top of unfinished ones.
+// The next tick is scheduled only AFTER this cycle completes, with a delay
+// derived from how the cycle went (fast -> 2 s, slow/failing -> stretched).
+// refreshPaused stops the TIMER only: an explicit refreshNow() (visibility
+// return, device activity, tests) still runs a single cycle.
+async function runRefreshCycle() {
+  refreshTimer = null;
   // Nothing to refresh while the tab is hidden; visibilitychange refreshes
   // immediately when the user comes back.
   if (document.hidden) return;
+  if (refreshInFlight) {
+    scheduleRefresh(REFRESH_INTERVAL);
+    return;
+  }
   refreshInFlight = true;
-  loadPageData(currentPage, true).finally(() => {
+  const startedAt = Date.now();
+  try {
+    await loadPageData(currentPage, true);
+  } catch (error) {
+    console.error('Page data load failed:', error);
+  } finally {
     refreshInFlight = false;
-  });
+    const elapsed = Date.now() - startedAt;
+    const failed = currentPage === 'dashboard' && sheetsState === 'error';
+    if (failed) {
+      refreshDelayMs = Math.min(REFRESH_MAX_MS, Math.max(REFRESH_ERROR_BACKOFF_MS, refreshDelayMs * 2));
+    } else if (elapsed > REFRESH_SLOW_MS) {
+      refreshDelayMs = Math.min(REFRESH_MAX_MS, Math.max(REFRESH_SLOW_MS, elapsed));
+    } else if (elapsed <= REFRESH_FAST_OK_MS) {
+      refreshDelayMs = REFRESH_INTERVAL;
+    } else {
+      refreshDelayMs = Math.min(REFRESH_SLOW_MS, Math.max(REFRESH_INTERVAL, elapsed));
+    }
+    scheduleRefresh(refreshDelayMs);
+  }
+}
+
+// Immediate refresh (tab became visible, device activity, post-write
+// reconcile). Still single-flight: a call while a cycle is running is dropped
+// - the running cycle already asked for fresh data.
+function refreshNow() {
+  if (refreshInFlight) return;
+  if (document.hidden) return;
+  if (refreshTimer) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+  runRefreshCycle();
 }
 
 // ==================== DASHBOARD ====================
@@ -838,6 +923,7 @@ async function loadDeviceStatus(options = {}) {
     edgeStatusValue = await fetchEdgeDeviceStatus(1);
     edgeState = 'ok';
     cacheWrite('deviceStatus', edgeStatusValue);
+    noteDeviceActivity(edgeStatusValue);
   } catch (error) {
     edgeStatusValue = null;
     edgeState = 'error';
@@ -846,6 +932,26 @@ async function loadDeviceStatus(options = {}) {
   }
   if (seq !== deviceSeq) return;
   renderSystemStatus();
+}
+
+// The Worker's last_seen advances whenever the ESP32 talks to it (a card tap
+// posts log_event; registration polls also count). That is the closest thing
+// this stack has to a push notification without new infrastructure, so an
+// advance on the dashboard triggers an immediate stats revalidation instead
+// of waiting for the next scheduled tick. Stats loads share the same
+// singleFlight GET key, so a burst of heartbeats cannot stack requests.
+function noteDeviceActivity(status) {
+  const seenMs = status && status.last_seen ? Date.parse(status.last_seen) : 0;
+  if (!Number.isFinite(seenMs) || seenMs <= 0) return;
+  const hadPrior = lastDeviceSeenMs > 0;
+  const advanced = seenMs > lastDeviceSeenMs;
+  lastDeviceSeenMs = Math.max(lastDeviceSeenMs, seenMs);
+  // Only a real advance after a previous reading counts as activity; the
+  // first heartbeat of the session is already covered by the initial load.
+  if (hadPrior && advanced && currentPage === 'dashboard') {
+    // minAge 0: always ask, never paint from the 8 s navigation cache.
+    loadDashboardStats({ minAge: 0 });
+  }
 }
 
 function buildSystemStatus() {

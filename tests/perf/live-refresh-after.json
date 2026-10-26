@@ -1,0 +1,19 @@
+{
+  "simulated": true,
+  "latency": {
+    "gasGet": 800,
+    "gasPost": 800,
+    "edge": 120,
+    "fontCss": 40,
+    "fontFile": 40
+  },
+  "measurements": {
+    "eventToVisibleMs": 531,
+    "simulatedGasGetMs": 800,
+    "dashboardRequestsPerMinute": 18,
+    "dashboardRequestsIn6_5s": 2,
+    "slowBackendDelayMs": 2515,
+    "slowBackendRequestsIn9s": 2,
+    "outageRequestsIn30s": 4
+  }
+}

@@ -18,14 +18,14 @@ const DEFAULT_LATENCY = {
 };
 
 export function istNow(offsetMs = 0) {
-  const d = new Date(Date.now() + offsetMs);
+  return istFromMs(Date.now() + offsetMs);
+}
+
+function istFromMs(ms) {
+  const d = new Date(ms);
   const ist = new Date(d.getTime() + (330 + d.getTimezoneOffset()) * 60000);
   const p = n => String(n).padStart(2, '0');
   return `${ist.getFullYear()}-${p(ist.getMonth() + 1)}-${p(ist.getDate())} ${p(ist.getHours())}:${p(ist.getMinutes())}:${p(ist.getSeconds())}`;
-}
-
-function isoNow(offsetMs = 0) {
-  return new Date(Date.now() + offsetMs).toISOString();
 }
 
 function buildDataset() {
@@ -110,13 +110,21 @@ export function createMockBackend(options = {}) {
     backend: options.backend || 'ok',     // 'ok' | 'fail' (Apps Script down)
     edgeMode: options.edgeMode || 'ok',   // 'ok' | 'fail'
     deviceState: options.deviceState || 'ONLINE',
+    // Absolute last_seen timestamp (ms). Stable between polls - the real
+    // Worker only advances it when the ESP32 actually talks to the edge - so
+    // the website's activity nudge is not falsely retriggered by every reply.
+    deviceLastSeenMs: Date.now() - 12000,
     dashboardLegacy: false,               // drop recent_scans/total_visits (old backend)
     deleteFail: false,                    // delete_history_record always refuses
     requests: [],                          // every intercepted request
     maxConcurrentByKey: {},                // worst observed overlap per action
     counters: {},
     failCount: 0,
-    registered: dataset.users.slice()     // mutable copy (registration tests)
+    registered: dataset.users.slice(),    // mutable copy (registration tests)
+    // Events injected by live-refresh tests (simulated ESP32 card taps that
+    // landed in Access_Log). Counters on get_dashboard_data include them.
+    injected: [],
+    insideDelta: 0
   };
 
   const inFlightByKey = new Map();
@@ -154,15 +162,18 @@ export function createMockBackend(options = {}) {
       case 'get_dashboard_data': {
         // Same shape the Apps Script backend answers with: five most recent
         // scans, and the distinct cards that entered today (the Reports
-        // total_visits scoped to a single day).
+        // total_visits scoped to a single day). Counters include events
+        // injected by tests via injectEvent(), so a live-refresh assertion
+        // can see the numbers move exactly like production.
         const today = localDateKey();
         const newestFirst = [...dataset.history]
           .sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
+        const injectedToday = state.injected.filter(e => e.date === today);
         const payload = {
           registered_users: state.registered.length,
-          currently_inside: dataset.inside.length,
-          today_entries: 58,
-          today_exits: 41,
+          currently_inside: dataset.inside.length + state.insideDelta,
+          today_entries: 58 + injectedToday.filter(e => e.action === 'ENTRY').length,
+          today_exits: 41 + injectedToday.filter(e => e.action === 'EXIT').length,
           latest_scan: {
             timestamp: istNow(-120000),
             name: dataset.users[0].name,
@@ -278,13 +289,13 @@ export function createMockBackend(options = {}) {
     if (state.deviceState === 'NEVER_SEEN') {
       return { success: true, data: { state: 'NEVER_SEEN', last_seen: '', last_seen_ist: '' } };
     }
-    const lastSeen = isoNow(-12000);
+    const seen = new Date(state.deviceLastSeenMs);
     return {
       success: true,
       data: {
         state: state.deviceState,
-        last_seen: lastSeen,
-        last_seen_ist: istNow(-12000)
+        last_seen: seen.toISOString(),
+        last_seen_ist: istFromMs(state.deviceLastSeenMs)
       }
     };
   }
@@ -415,6 +426,30 @@ export function createMockBackend(options = {}) {
       state.failCount = 0;
       state.dashboardLegacy = false;
       state.deleteFail = false;
+      state.injected.length = 0;
+      state.insideDelta = 0;
+    },
+    // Simulates an ESP32 entry/exit landing in Access_Log + Current_status.
+    // The next get_dashboard_data reflects it (recent scan, counters) and the
+    // Worker last_seen advances, exactly like a real card tap through the
+    // edge API. Returns the write instant so a test can measure
+    // event-recorded -> visible-on-screen latency honestly.
+    injectEvent({
+      rfid_uid = 'A37B9122',
+      name = 'Pavan Kumar',
+      user_id = 'A866051240',
+      action = 'ENTRY'
+    } = {}) {
+      const at = Date.now();
+      const ts = istFromMs(at);
+      const [date, time] = ts.split(' ');
+      const row = { timestamp: ts, date, time, rfid_uid, name, user_id, action, status: 'ALLOWED' };
+      dataset.history.push(row);
+      state.injected.push(row);
+      if (action === 'ENTRY') state.insideDelta += 1;
+      if (action === 'EXIT') state.insideDelta = Math.max(0, state.insideDelta - 1);
+      state.deviceLastSeenMs = at;
+      return { at, row };
     },
     requestsOf(kind, key) {
       return state.requests.filter(r => (!kind || r.kind === kind) && (!key || r.key === key));

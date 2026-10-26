@@ -1,0 +1,17 @@
+{
+  "simulated": true,
+  "note": "BEFORE baseline: fixed 10 s frontend poll (REFRESH_INTERVAL=10000) with no GET cache-busting. Event-to-visible delay is dominated by the poll phase (uniform 0-10 s) plus one Apps Script round trip. Values are analytical/derived from the old constants + the same simulated GAS latency used in live-refresh.mjs - NOT production measurements.",
+  "oldConstants": {
+    "REFRESH_INTERVAL": 10000,
+    "cacheBusting": false
+  },
+  "simulatedGasGetMs": 800,
+  "measurements": {
+    "eventToVisibleMsBestCase": 800,
+    "eventToVisibleMsWorstCase": 10800,
+    "eventToVisibleMsExpectedAverage": 5800,
+    "dashboardRequestsPerMinute": 6,
+    "singleInFlight": true,
+    "cacheBustedGets": false
+  }
+}

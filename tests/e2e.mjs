@@ -62,7 +62,7 @@ async function main() {
   const gas = action => mock.requestsOf('gas', action).length;
   const edge = () => mock.requestsOf('edge').length;
 
-  const pauseRefresh = () => evaluate(cdp, 'clearInterval(refreshTimer); refreshTimer = null; true');
+  const pauseRefresh = () => evaluate(cdp, 'pauseAutoRefresh(); true');
   const resumeRefresh = () => evaluate(cdp, 'startAutoRefresh(); true');
 
   try {
@@ -284,12 +284,16 @@ async function main() {
     });
 
     // ---------------------------------------------------------------- T7
-    await step('10-second auto refresh still runs while the tab is visible', async () => {
+    await step('live auto refresh runs every ~2 s while the tab is visible', async () => {
       await resumeRefresh();
       const before = { dash: gas('get_dashboard_data'), edge: edge() };
-      await sleep(11000);
-      assert(gas('get_dashboard_data') - before.dash >= 1, 'dashboard statistics must refresh within 11 s');
-      assert(edge() - before.edge >= 1, 'device status must refresh within 11 s');
+      await sleep(3000);
+      const dashUsed = gas('get_dashboard_data') - before.dash;
+      const edgeUsed = edge() - before.edge;
+      // 2 s cadence + ~400 ms mock latency: one or two full cycles fit in 3 s.
+      assert(dashUsed >= 1, 'dashboard statistics must refresh within 3 s');
+      assert(dashUsed <= 3, `2 s live refresh should issue 1-3 dashboard calls in 3 s, got ${dashUsed}`);
+      assert(edgeUsed >= 1, 'device status must refresh within 3 s');
     });
 
     // ---------------------------------------------------------------- T8

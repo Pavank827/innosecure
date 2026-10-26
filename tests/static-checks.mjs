@@ -4,7 +4,7 @@
 //
 // Guards the things a runtime test cannot see: syntax, HTML/JS wiring,
 // secrets in shipped code, HTTPS-only references, and the behavioural
-// constants that must not drift (10 s refresh, 400 ms filter debounce).
+// constants that must not drift (2 s live refresh, 400 ms filter debounce).
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -117,13 +117,20 @@ check('remote stylesheet links exist only in the <noscript> fallback',
 check('app.js is loaded with defer', /<script src="app\.js" defer><\/script>/.test(indexHtml));
 
 // -------------------------------------------------- 6. behavioural constants
-check('refresh interval is still 10 s', /const REFRESH_INTERVAL = 10000;/.test(appJs));
+check('live refresh interval is ~2 s', /const REFRESH_INTERVAL = 2000;/.test(appJs));
 check('filter debounce is still 400 ms', /const FILTER_DEBOUNCE_MS = 400;/.test(appJs));
 check('auth token stays in sessionStorage (not localStorage)',
   /sessionStorage\.setItem\('authToken'/.test(appJs) &&
   !/localStorage\.setItem\('authToken'/.test(appJs));
 check('auto refresh is skipped while the tab is hidden', /if \(document\.hidden\) return;/.test(appJs));
 check('overlapping refreshes are refused', /if \(refreshInFlight\) return;/.test(appJs));
+check('refresh GETs are cache-busted (no stale Apps Script echo)',
+  /nc=\$\{Date\.now\(\)\}/.test(appJs) && /cache: 'no-store'/.test(appJs));
+check('the next tick is scheduled only after the previous cycle completes',
+  /scheduleRefresh\(refreshDelayMs\)/.test(appJs) &&
+    /refreshInFlight = false;\s*const elapsed/.test(appJs));
+check('a failing dashboard stretches the refresh delay (adaptive backoff)',
+  /REFRESH_ERROR_BACKOFF_MS/.test(appJs) && /REFRESH_MAX_MS/.test(appJs));
 
 // ------------------------------------------------------------- 7. dead code
 const dead = ['saveAdminAccounts', 'escapeAttrJs'].filter(fn => appJs.includes(fn));
